@@ -44,11 +44,17 @@ func (a *App) Merge(n int, reviewed, method string) error {
 		return exitf(ExitIncomplete, "merge PR #%d had no clear outcome: %v\nCheck the PR before merging again", pr.Number, err)
 	}
 	uuid := m.Details.UUID
+	failures := 0
 	for deadline := time.Now().Add(10 * time.Minute); m.Status == "pending" && time.Now().Before(deadline); {
 		time.Sleep(3 * time.Second)
-		if next, err := a.GH.MergeAsyncResult(pr.Number, uuid); err == nil {
-			m = next
+		next, err := a.GH.MergeAsyncResult(pr.Number, uuid)
+		if err != nil {
+			if failures++; failures == 5 {
+				return exitf(ExitIncomplete, "merge PR #%d was submitted, but its result cannot be read: %v\nCheck the PR before merging again", pr.Number, err)
+			}
+			continue
 		}
+		failures, m = 0, next
 	}
 	switch m.Status {
 	case "merged":

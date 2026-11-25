@@ -24,12 +24,20 @@ type fakeAPI struct {
 	closeErr  error
 	closed    []int
 	statuses  []string
-	stack     *gh.Stack // what StackFor returns for the claim PR
+	stack     *gh.Stack // the stack registration creates
 	stackErr  error     // returned by CreateStack and AddToStack
 	stacked   [][]int
+	reads     int // StackFor calls after registration
+	parent    *gh.PR
 }
 
-func (f *fakeAPI) StackFor(int) (*gh.Stack, error) { return f.stack, nil }
+func (f *fakeAPI) StackFor(int) (*gh.Stack, error) {
+	if len(f.stacked) == 0 {
+		return nil, nil
+	}
+	f.reads++
+	return f.stack, nil
+}
 func (f *fakeAPI) CreateStack(prs ...int) (*gh.Stack, error) {
 	f.stacked = append(f.stacked, prs)
 	return f.stack, f.stackErr
@@ -37,6 +45,12 @@ func (f *fakeAPI) CreateStack(prs ...int) (*gh.Stack, error) {
 func (f *fakeAPI) AddToStack(_ int, prs ...int) (*gh.Stack, error) {
 	f.stacked = append(f.stacked, prs)
 	return f.stack, f.stackErr
+}
+func (f *fakeAPI) PR(int) (*gh.PR, error) {
+	if f.parent == nil {
+		return &gh.PR{}, nil
+	}
+	return f.parent, nil
 }
 
 func (f *fakeAPI) CreatePR(_, head, _, body string) (*gh.PR, error) {
@@ -274,6 +288,45 @@ func TestStackedClaimContinuesWhenTheStackAnswerWasLost(t *testing.T) {
 	c, _ := setup(t, api)
 	if err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main", parentPR()); err != nil {
 		t.Fatal(err)
+	}
+	if api.reads == 0 {
+		t.Fatal("did not read the stack back after a lost answer")
+	}
+}
+
+func TestStackedClaimKeepsEverythingWhenALostAnswerLeavesNoStack(t *testing.T) {
+	api := &fakeAPI{createPR: &gh.PR{Number: 12}, stackErr: errTimeout}
+	c, remote := setup(t, api)
+	err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main", parentPR())
+	var be *Error
+	if !errors.As(err, &be) || be.Code != ExitIncomplete || len(api.closed) != 0 || remoteHas(t, remote, c.lock.Ref) != c.lock.SHA {
+		t.Fatalf("got %v, closed %v", err, api.closed)
+	}
+}
+
+func TestStackedClaimAtTheBottomNeedsItsParentMerged(t *testing.T) {
+	api := &fakeAPI{createPR: &gh.PR{Number: 12}, stack: stackOf(12)}
+	c, _ := setup(t, api)
+	err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main", parentPR())
+	var be *Error
+	if !errors.As(err, &be) || be.Code != ExitIncomplete {
+		t.Fatalf("accepted a bottom position with the parent unmerged: %v", err)
+	}
+	merged := "2026-11-25T00:00:00Z"
+	api2 := &fakeAPI{createPR: &gh.PR{Number: 12}, stack: stackOf(12), parent: &gh.PR{Number: 11, MergedAt: &merged}}
+	c2, _ := setup(t, api2)
+	if err := c2.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main", parentPR()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRollbackKeepsAPRThatJoinedAStack(t *testing.T) {
+	api := &fakeAPI{createPR: &gh.PR{Number: 12}, setErr: &api.HTTPError{StatusCode: 403}, stack: stackOf(11, 12)}
+	c, remote := setup(t, api)
+	api.onSet = func() { api.stacked = append(api.stacked, []int{11, 12}) } // someone else stacks it
+	err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main", nil)
+	if len(api.closed) != 0 || remoteHas(t, remote, c.lock.Ref) != c.lock.SHA {
+		t.Fatalf("closed %v after the PR joined a stack: %v", api.closed, err)
 	}
 }
 

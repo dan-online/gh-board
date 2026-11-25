@@ -28,6 +28,7 @@ type claimAPI interface {
 	StackFor(pr int) (*gh.Stack, error)
 	CreateStack(prs ...int) (*gh.Stack, error)
 	AddToStack(stack int, prs ...int) (*gh.Stack, error)
+	PR(number int) (*gh.PR, error)
 }
 
 // parent is the claim a stacked claim builds on.
@@ -228,6 +229,10 @@ func (c *claim) fail(cause error) error {
 		}
 	}
 	if c.pr != nil && len(left) == 0 {
+		// Someone may have stacked the PR since it was opened; closing it would block the PRs above.
+		if st, err := c.gh.StackFor(c.pr.Number); err != nil || st != nil {
+			return c.keep("roll back a PR that may be in a stack", errors.Join(cause, err))
+		}
 		if err := c.gh.ClosePR(c.pr.Number); err != nil {
 			left = append(left, fmt.Sprintf("close PR #%d", c.pr.Number))
 		}
@@ -335,11 +340,20 @@ func (c *claim) register(up *parent) error {
 		return c.keep("register the stack", err)
 	}
 	c.stacked = true
-	if below := st.Below(c.pr.Number); below != up.pr.Number && below != 0 {
-		return c.keep("register the stack", fmt.Errorf("PR #%d landed above #%d, not #%d", c.pr.Number, below, up.pr.Number))
+	switch below := st.Below(c.pr.Number); {
+	case below == up.pr.Number:
+	case below == 0 && c.parentMerged(up):
+		// The parent landed during setup and GitHub moved this PR to the bottom.
+	default:
+		return c.keep("register the stack", fmt.Errorf("PR #%d is not directly above #%d in stack %d", c.pr.Number, up.pr.Number, st.Number))
 	}
 	if now, err := c.a.remoteRef("refs/heads/" + up.pr.Head.Ref); err == nil && now != "" && now != up.head {
 		c.a.notef("#%d's branch moved during the claim; restack with: gh stack rebase\n", up.issue)
 	}
 	return nil
+}
+
+func (c *claim) parentMerged(up *parent) bool {
+	pr, err := c.gh.PR(up.pr.Number)
+	return err == nil && pr.MergedAt != nil
 }
