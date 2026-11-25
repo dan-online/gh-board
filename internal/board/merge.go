@@ -24,7 +24,20 @@ func (a *App) Merge(n int, reviewed, method string) error {
 	if found == nil {
 		return fmt.Errorf("issue #%d's claim has no PR", n)
 	}
-	pr, err := a.GH.PR(found.Number)
+	return a.mergePR(a.GH, found.Number, reviewed, method)
+}
+
+// mergeAPI is the GitHub side of a merge.
+type mergeAPI interface {
+	PR(number int) (*gh.PR, error)
+	StackFor(pr int) (*gh.Stack, error)
+	MergeAsync(pr int, method, headSHA string) (*gh.AsyncMerge, error)
+	MergeAsyncResult(pr int, uuid string) (*gh.AsyncMerge, error)
+	OpenPRsOnBase(branch string) ([]gh.PR, error)
+}
+
+func (a *App) mergePR(api mergeAPI, number int, reviewed, method string) error {
+	pr, err := api.PR(number)
 	if err != nil {
 		return err
 	}
@@ -36,7 +49,7 @@ func (a *App) Merge(n int, reviewed, method string) error {
 	case reviewed != "" && reviewed != pr.Head.SHA:
 		return fmt.Errorf("PR #%d's head is %s, not the reviewed %s; review the new head first", pr.Number, pr.Head.SHA, reviewed)
 	}
-	st, err := a.GH.StackFor(pr.Number)
+	st, err := api.StackFor(pr.Number)
 	if err != nil {
 		return err
 	}
@@ -44,7 +57,7 @@ func (a *App) Merge(n int, reviewed, method string) error {
 		// Merging lands every PR below too, and those may not have passed review or CI.
 		return fmt.Errorf("PR #%d sits above open PR #%d in stack %d; merge the stack bottom-up, starting with #%d", pr.Number, below, st.Number, below)
 	}
-	m, err := a.GH.MergeAsync(pr.Number, method, pr.Head.SHA)
+	m, err := api.MergeAsync(pr.Number, method, pr.Head.SHA)
 	if err != nil {
 		if gh.Definite(err) {
 			return fmt.Errorf("merge PR #%d: %w", pr.Number, err)
@@ -55,7 +68,7 @@ func (a *App) Merge(n int, reviewed, method string) error {
 	failures := 0
 	for deadline := time.Now().Add(10 * time.Minute); m.Status == "pending" && time.Now().Before(deadline); {
 		time.Sleep(3 * time.Second)
-		next, err := a.GH.MergeAsyncResult(pr.Number, uuid)
+		next, err := api.MergeAsyncResult(pr.Number, uuid)
 		if err != nil {
 			if failures++; failures == 5 {
 				return exitf(ExitIncomplete, "merge PR #%d was submitted, but its result cannot be read: %v\nCheck the PR before merging again", pr.Number, err)
@@ -76,7 +89,7 @@ func (a *App) Merge(n int, reviewed, method string) error {
 	a.printf("merged PR #%d as %s\n", pr.Number, m.Details.SHA)
 
 	branch := pr.Head.Ref
-	if on, err := a.GH.OpenPRsOnBase(branch); err != nil || len(on) > 0 {
+	if on, err := api.OpenPRsOnBase(branch); err != nil || len(on) > 0 {
 		a.notef("kept branch %s: open PRs still build on it or the check failed\n", branch)
 		return nil
 	}
