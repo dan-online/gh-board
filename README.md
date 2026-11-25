@@ -1,0 +1,69 @@
+# gh board
+
+A GitHub CLI extension for running an issue board on a GitHub project, built for repos where coding agents file and claim the work
+
+It files issues with their project fields, checks an issue against its issue form before it moves to ready, and claims work by opening a branch, a worktree and a draft PR in one go. Everything lives on GitHub, so there's no local state to sync between machines.
+
+## Installation
+
+```sh
+gh extension install dan-online/gh-board --pin v0.1.0
+gh board doctor
+```
+
+To move to a newer release, reinstall at its tag:
+
+```sh
+gh extension remove board
+gh extension install dan-online/gh-board --pin v0.2.0
+```
+
+Board writes need the `project` scope (`gh auth refresh -s project`), write access to the project and push access to the repo. `gh board doctor` checks all of that.
+
+## Usage
+
+Add `.github/board.yml` to the repo:
+
+```yaml
+repo: owner/repo
+remote: origin
+project: { owner: owner, number: 1 }
+api_version: "2026-03-10"
+worktrees: .worktrees
+types: [Task, Bug, Feature]
+statuses: { new: Inbox, ready: Ready, claimed: In progress }
+fields:
+  Size: { options: [S, M, L], required: true }
+  Priority: { options: [Now, Next], default: Next }
+queue: { sort: Priority }
+forms:
+  - { label: decision, file: decision.yml }
+  - { default: true, file: work.yml, require: { Size: [S, M] } }
+```
+
+`project.owner` can be an organization or a user. `forms` point at files in `.github/ISSUE_TEMPLATE`, and the first form whose label the issue has wins. `min_version: vX.Y.Z` makes older builds refuse to run in the repo.
+
+Then:
+
+```sh
+gh board file --type Task --title "Add the thing" --body-file body.md --field Size=S
+gh board ready 42
+gh board next
+gh board claim 42 "feat(api): add the thing"
+gh board status 42 "In review"
+```
+
+`claim` prints the worktree path and the draft PR URL. Pass `--refs` to write `Refs #42` instead of `Closes #42` for work that only closes after a deploy.
+
+`gh board skill` prints a guide for agents, with the repo's own fields and forms filled in. Point your agent instructions at it rather than copying the commands around.
+
+## Development
+
+```sh
+nix develop
+go test ./...
+```
+
+## License
+
+MIT
