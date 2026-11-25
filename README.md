@@ -7,15 +7,15 @@ It files issues with their project fields, checks an issue against its issue for
 ## Installation
 
 ```sh
-gh extension install dan-online/gh-board --pin v0.1.0
+gh extension install dan-online/gh-board --pin v1.0.1
 gh board doctor
 ```
 
-To move to a newer release, reinstall at its tag:
+To move to a newer release, reinstall at its tag (a plain `gh extension upgrade` skips pinned installs):
 
 ```sh
 gh extension remove board
-gh extension install dan-online/gh-board --pin v0.2.0
+gh extension install dan-online/gh-board --pin vX.Y.Z
 ```
 
 Board writes need the `project` scope (`gh auth refresh -s project`), write access to the project and push access to the repo. `gh board doctor` checks all of that.
