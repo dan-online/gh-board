@@ -198,6 +198,9 @@ func (r *initRun) pickProject(info *gh.RepoInfo) (created bool, err error) {
 		r.cfg.Project = config.Project{Owner: p.Owner, Number: p.Number}
 		return false, nil
 	}
+	if len(r.o.Fields)+len(r.o.Required)+len(r.o.Defaults) > 0 || r.o.Sort != "" {
+		return false, exitf(ExitUsage, "--field, --required, --default and --sort apply to an existing project; a new one gets Size (required) and Priority (default Next), ranked by Priority")
+	}
 	title := r.cfg.Name() + " board"
 	plan := fmt.Sprintf("create project %q owned by %s and linked to %s, with Status %s, Size S, M or L, and Priority Now or Next",
 		title, info.OwnerLogin, r.cfg.Repo, strings.Join(templateStatuses, ", "))

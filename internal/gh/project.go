@@ -196,8 +196,8 @@ func (c *Client) Items() ([]Item, error) {
 }
 
 func inRepo(items []Item, repo string) []Item {
-	prefix := "https://github.com/" + repo + "/issues/"
-	return slices.DeleteFunc(items, func(it Item) bool { return !strings.HasPrefix(it.Issue.HTMLURL, prefix) })
+	prefix := strings.ToLower("https://github.com/" + repo + "/issues/")
+	return slices.DeleteFunc(items, func(it Item) bool { return !strings.HasPrefix(strings.ToLower(it.Issue.HTMLURL), prefix) })
 }
 
 func (c *Client) AddItem(issue *Issue) (int64, error) {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/dan-online/gh-board/internal/config"
@@ -106,6 +107,15 @@ func TestInitRejectsUnknownRequiredField(t *testing.T) {
 	r := &initRun{out: io.Discard, cfg: &config.Config{}, o: InitOpts{Required: []string{"Szie"}}}
 	err := r.pickFields([]gh.SelectField{{Name: "Status"}, {Name: "Size", Options: option("S")}})
 	if err == nil || err.Error() != "--required Szie: not one of the chosen fields: Size" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestInitRefusesFieldFlagsBeforeCreatingAProject(t *testing.T) {
+	// No gh client: reaching CreateProject would panic.
+	r := &initRun{out: io.Discard, cfg: &config.Config{Repo: "o/r"}, o: InitOpts{Create: true, Required: []string{"Effort"}}}
+	_, err := r.pickProject(&gh.RepoInfo{OwnerLogin: "o"})
+	if err == nil || !strings.HasPrefix(err.Error(), "--field, --required, --default and --sort apply to an existing project") {
 		t.Fatalf("got %v", err)
 	}
 }
