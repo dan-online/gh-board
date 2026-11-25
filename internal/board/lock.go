@@ -149,13 +149,15 @@ func (a *App) push(g git.Git, ref, sha, expect, src string, opts ...string) (res
 	refused := false
 	for _, line := range strings.Split(out, "\n") {
 		if fields := strings.Split(line, "\t"); len(fields) >= 2 && strings.HasSuffix(fields[1], ":"+ref) {
-			refused = strings.HasPrefix(line, "!")
+			// "=" means the ref already held sha before this push. Git reports it
+			// without checking the lease, so it is someone else's ref, not ours.
+			refused = strings.HasPrefix(line, "!") || strings.HasPrefix(line, "=")
 		}
 	}
 	now, err = a.remoteRef(ref)
 	switch {
-	case err != nil && refused:
-		return rejected, "", nil
+	case refused:
+		return rejected, now, nil
 	case err != nil:
 		return unknown, "", errors.Join(pushErr, err)
 	case now == sha:

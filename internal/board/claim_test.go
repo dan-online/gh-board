@@ -20,6 +20,7 @@ type fakeAPI struct {
 	createErr error
 	createPR  *gh.PR // PR that exists after CreatePR, even when it errs
 	setErr    error
+	onSet     func() // runs inside SetFields, before it fails
 	closeErr  error
 	closed    []int
 	statuses  []string
@@ -44,6 +45,9 @@ func (f *fakeAPI) PRsForBranch(string) ([]gh.PR, error) {
 }
 func (f *fakeAPI) SetFields(_ int64, v map[string]string) error {
 	f.statuses = append(f.statuses, v["Status"])
+	if f.onSet != nil {
+		f.onSet()
+	}
 	return f.setErr
 }
 
@@ -169,5 +173,49 @@ func TestClaimLeavesAnotherAttemptsBranchAlone(t *testing.T) {
 	}
 	if remoteHas(t, remote, c.lock.Ref) != "" {
 		t.Fatal("lock kept after a definite failure with nothing left to undo")
+	}
+}
+
+func TestClaimKeepsPRAndLockWhenItsBranchMovedDuringRollback(t *testing.T) {
+	api := &fakeAPI{createPR: &gh.PR{Number: 12}, setErr: &api.HTTPError{StatusCode: 403}}
+	c, remote := setup(t, api)
+	api.onSet = func() {
+		wt := c.worktree
+		run(t, wt, "commit", "-q", "--allow-empty", "-m", "theirs")
+		run(t, wt, "push", "-q", "origin", "HEAD:refs/heads/"+c.branch)
+	}
+	err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main")
+	if err == nil || !strings.Contains(err.Error(), "delete remote branch") {
+		t.Fatalf("got %v", err)
+	}
+	if len(api.closed) != 0 {
+		t.Fatal("PR closed while the attempt's branch could not be removed; the lock would look takeable")
+	}
+	if remoteHas(t, remote, c.lock.Ref) != c.lock.SHA {
+		t.Fatal("lock released with leftovers on the remote")
+	}
+}
+
+func TestClaimKeepsAnExistingLocalBranch(t *testing.T) {
+	c, _ := setup(t, &fakeAPI{createPR: &gh.PR{Number: 12}})
+	main := c.a.Git.Dir
+	run(t, main, "branch", c.branch)
+	mine := run(t, main, "rev-parse", c.branch)
+	if err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main"); err == nil {
+		t.Fatal("claimed over an existing local branch")
+	}
+	if got := run(t, main, "rev-parse", c.branch); got != mine {
+		t.Fatalf("local branch changed or deleted: %s", got)
+	}
+}
+
+func TestClaimDoesNotOwnABranchSomeoneElseCreatedAtItsCommit(t *testing.T) {
+	c, remote := setup(t, &fakeAPI{createPR: &gh.PR{Number: 12}})
+	run(t, c.a.Git.Dir, "push", "-q", "origin", c.lock.SHA+":refs/heads/"+c.branch)
+	if err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main"); err == nil {
+		t.Fatal("claimed although the branch push was refused")
+	}
+	if remoteHas(t, remote, "refs/heads/"+c.branch) != c.lock.SHA {
+		t.Fatal("deleted a branch this attempt did not create")
 	}
 }

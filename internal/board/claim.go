@@ -35,6 +35,7 @@ type claim struct {
 	lock     lock
 	pushed   bool
 	pr       *gh.PR
+	local    bool // this attempt created the local branch
 }
 
 // Claim takes the issue's lock, then creates the branch, worktree and draft PR.
@@ -126,6 +127,7 @@ func (c *claim) finish(o ClaimOpts, item *gh.Item, base string) error {
 	if _, err := a.Git.Run("worktree", "add", "-b", c.branch, c.worktree, c.lock.SHA); err != nil {
 		return c.fail(err)
 	}
+	c.local = true
 	branchRef := "refs/heads/" + c.branch
 	res, _, err := a.push(git.Git{Dir: c.worktree}, branchRef, c.lock.SHA, "", c.branch, "-u")
 	switch res {
@@ -173,29 +175,28 @@ func (c *claim) keep(step string, err error) error {
 		step, err, c.lock.Ref, c.lock.Attempt, c.number, c.number, c.lock.SHA)
 }
 
-// fail undoes what this attempt made, newest first, and releases the lock last.
-// If any step cannot be undone, the lock stays so no one else claims over the leftovers.
+// fail undoes what this attempt made and releases the lock last. The PR
+// closes only after the branch and worktree are gone, because a closed PR is
+// what lets the next claim take the lock over. If any undo fails, the PR stays
+// open and the lock stays, so no one claims over the leftovers.
 func (c *claim) fail(cause error) error {
 	a := c.a
 	var left []string
-	if c.pr != nil {
-		if err := c.gh.ClosePR(c.pr.Number); err != nil {
-			left = append(left, fmt.Sprintf("close PR #%d", c.pr.Number))
-		}
-	}
 	if c.pushed {
 		if res, _, _ := a.pushRef("refs/heads/"+c.branch, "", c.lock.SHA); res != pushed {
 			left = append(left, "delete remote branch "+c.branch)
 		}
 	}
-	if _, err := os.Stat(c.worktree); err == nil {
+	if c.local {
 		if _, err := a.Git.Run("worktree", "remove", "--force", c.worktree); err != nil {
 			left = append(left, "remove worktree "+c.worktree)
+		} else if _, err := a.Git.Run("branch", "-D", c.branch); err != nil {
+			left = append(left, "delete local branch "+c.branch)
 		}
 	}
-	if _, err := a.Git.Run("rev-parse", "--verify", "--quiet", "refs/heads/"+c.branch); err == nil {
-		if _, err := a.Git.Run("branch", "-D", c.branch); err != nil {
-			left = append(left, "delete local branch "+c.branch)
+	if c.pr != nil && len(left) == 0 {
+		if err := c.gh.ClosePR(c.pr.Number); err != nil {
+			left = append(left, fmt.Sprintf("close PR #%d", c.pr.Number))
 		}
 	}
 	if len(left) == 0 {
@@ -203,6 +204,9 @@ func (c *claim) fail(cause error) error {
 			left = append(left, fmt.Sprintf("release the lock: gh board release %d --sha %s", c.number, c.lock.SHA))
 		}
 	} else {
+		if c.pr != nil {
+			left = append(left, fmt.Sprintf("close PR #%d", c.pr.Number))
+		}
 		left = append(left, fmt.Sprintf("then release the lock: gh board release %d --sha %s", c.number, c.lock.SHA))
 	}
 	if len(left) > 0 {

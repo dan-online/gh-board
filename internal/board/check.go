@@ -67,8 +67,15 @@ func (a *App) Check() error {
 		a.printf("#%d\t%s\t%s\n", n, l, note)
 	}
 	for _, it := range items {
-		if it.Values["Status"] == a.Cfg.Statuses.Claimed && it.Issue.State == "open" && !locked[it.Issue.Number] {
-			a.printf("#%d\t%s with no lock\n", it.Issue.Number, a.Cfg.Statuses.Claimed)
+		if it.Issue.State != "open" || locked[it.Issue.Number] {
+			continue
+		}
+		switch status := it.Values["Status"]; {
+		case status == a.Cfg.Statuses.Claimed:
+			a.printf("#%d\t%s with no lock\n", it.Issue.Number, status)
+			problems++
+		case status == a.Cfg.Statuses.Ready && len(it.OpenPRs) > 0:
+			a.printf("#%d\t%s with open PR %v and no lock\n", it.Issue.Number, status, it.OpenPRs)
 			problems++
 		}
 	}
