@@ -90,10 +90,17 @@ func (a *App) File(o FileOpts) error {
 	for i, s := range steps {
 		if err := s.run(); err != nil {
 			var left []string
-			for _, r := range steps[i:] {
+			for _, r := range steps[i+1:] {
 				left = append(left, r.name)
 			}
-			return fmt.Errorf("%s: %w\nIssue #%d exists, but these writes are missing: %s", s.name, err, issue.Number, strings.Join(left, "; "))
+			rest := "nothing else"
+			if len(left) > 0 {
+				rest = strings.Join(left, "; ")
+			}
+			if !gh.Definite(err) {
+				return exitf(ExitIncomplete, "%s: %v\nIssue #%d exists. This write may have happened: check it before repeating it. Still missing after it: %s", s.name, err, issue.Number, rest)
+			}
+			return fmt.Errorf("%s: %w\nIssue #%d exists, but these writes are missing: %s; then %s", s.name, err, issue.Number, s.name, rest)
 		}
 	}
 	return nil

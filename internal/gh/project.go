@@ -185,8 +185,20 @@ func (c *Client) FindItem(issue *Issue) (*Item, error) {
 	return nil, fmt.Errorf("issue #%d is not on project %s #%d", issue.Number, c.cfg.Project.Owner, c.cfg.Project.Number)
 }
 
-// Items returns every issue item on the project, in board order.
-func (c *Client) Items() ([]Item, error) { return c.items("") }
+// Items returns the project's items for issues in the board's repo, in board order.
+// A project can hold other repos' issues, whose numbers mean nothing here.
+func (c *Client) Items() ([]Item, error) {
+	items, err := c.items("")
+	if err != nil {
+		return nil, err
+	}
+	return inRepo(items, c.cfg.Repo), nil
+}
+
+func inRepo(items []Item, repo string) []Item {
+	prefix := "https://github.com/" + repo + "/issues/"
+	return slices.DeleteFunc(items, func(it Item) bool { return !strings.HasPrefix(it.Issue.HTMLURL, prefix) })
+}
 
 func (c *Client) AddItem(issue *Issue) (int64, error) {
 	p, err := c.project()

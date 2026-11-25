@@ -102,6 +102,14 @@ func TestInitAsksForStatusesFieldsAndForms(t *testing.T) {
 	}
 }
 
+func TestInitRejectsUnknownRequiredField(t *testing.T) {
+	r := &initRun{out: io.Discard, cfg: &config.Config{}, o: InitOpts{Required: []string{"Szie"}}}
+	err := r.pickFields([]gh.SelectField{{Name: "Status"}, {Name: "Size", Options: option("S")}})
+	if err == nil || err.Error() != "--required Szie: not one of the chosen fields: Size" {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestInitWithoutTerminalNamesTheFlag(t *testing.T) {
 	r := &initRun{out: io.Discard, cfg: &config.Config{}}
 	err := r.pickStatuses([]gh.SelectField{{Name: "Status", Options: option("Todo", "Ready", "In progress")}})

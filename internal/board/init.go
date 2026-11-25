@@ -116,15 +116,19 @@ func (r *initRun) build() error {
 	if err != nil {
 		return err
 	}
-	created, err := r.pickProject(info)
-	if err != nil {
-		return err
-	}
+	// Settle every choice that needs no project before creating one.
 	if r.cfg.Types = r.o.Types; len(r.cfg.Types) == 0 {
 		r.cfg.Types = info.IssueTypes
 	}
 	if len(r.cfg.Types) == 0 {
 		return errors.New("the repo has no enabled issue types; pass --type for each type issues may use")
+	}
+	if err := r.pickForms(); err != nil {
+		return err
+	}
+	created, err := r.pickProject(info)
+	if err != nil {
+		return err
 	}
 	projectID, fields, err := r.gh.SelectFields()
 	if err != nil {
@@ -142,7 +146,7 @@ func (r *initRun) build() error {
 			return err
 		}
 	}
-	return r.pickForms()
+	return nil
 }
 
 // consent asks for a write: a person confirms it, an agent passes --create.
@@ -330,6 +334,11 @@ func (r *initRun) pickFields(fields []gh.SelectField) error {
 		}
 		for _, i := range picked {
 			required = append(required, chosen[i])
+		}
+	}
+	for _, name := range required {
+		if !slices.Contains(chosen, name) {
+			return exitf(ExitUsage, "--required %s: not one of the chosen fields: %s", name, strings.Join(chosen, ", "))
 		}
 	}
 	r.cfg.Fields = map[string]config.Field{}
