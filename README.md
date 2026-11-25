@@ -22,7 +22,9 @@ Board writes need the `project` scope (`gh auth refresh -s project`), write acce
 
 ## Usage
 
-Add `.github/board.yml` to the repo:
+Run `gh board init` in the repo. It uses the project linked to the repo, or offers to create one with Status, Size and Priority fields, then writes `.github/board.yml`. Without a terminal it takes flags instead of asking (`gh board init --help`), and it only creates or changes a project when you pass `--create`.
+
+The config it writes looks like this:
 
 ```yaml
 repo: owner/repo

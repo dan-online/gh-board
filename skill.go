@@ -24,6 +24,7 @@ func skill(app *kong.Application, a *board.App) string {
 		w("Statuses move %s, then %s, then %s when claimed.\n\n", c.Statuses.New, c.Statuses.Ready, c.Statuses.Claimed)
 	}
 	w("## Workflow\n\n")
+	w("0. A checkout without `.github/board.yml` needs `gh board init` first. Without a terminal, pass its flags; it names any it needs.\n")
 	w("1. File work with `gh board file`. Write the body under the form's `### ` headings. The issue starts in the new status.\n")
 	w("2. When every required section is filled, run `gh board ready N`. It names each missing section or field.\n")
 	w("3. Pick work with `gh board next`, then `gh board claim N 'type(scope): subject'`. The title becomes the squash commit subject.\n")

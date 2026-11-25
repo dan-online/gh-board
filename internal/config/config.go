@@ -23,13 +23,13 @@ type Config struct {
 	Remote     string           `yaml:"remote"`
 	Project    Project          `yaml:"project"`
 	APIVersion string           `yaml:"api_version"`
-	MinVersion string           `yaml:"min_version"`
+	MinVersion string           `yaml:"min_version,omitempty"`
 	Worktrees  string           `yaml:"worktrees"`
 	Types      []string         `yaml:"types"`
 	Statuses   Statuses         `yaml:"statuses"`
-	Fields     map[string]Field `yaml:"fields"`
-	Queue      *Queue           `yaml:"queue"`
-	Forms      []Form           `yaml:"forms"`
+	Fields     map[string]Field `yaml:"fields,omitempty"`
+	Queue      *Queue           `yaml:"queue,omitempty"`
+	Forms      []Form           `yaml:"forms,omitempty"`
 
 	// Root is the checkout the config was read from.
 	Root string `yaml:"-"`
@@ -48,8 +48,8 @@ type Statuses struct {
 
 type Field struct {
 	Options  []string `yaml:"options"`
-	Required bool     `yaml:"required"`
-	Default  string   `yaml:"default"`
+	Required bool     `yaml:"required,omitempty"`
+	Default  string   `yaml:"default,omitempty"`
 }
 
 type Queue struct {
@@ -57,10 +57,10 @@ type Queue struct {
 }
 
 type Form struct {
-	Label   string              `yaml:"label"`
-	Default bool                `yaml:"default"`
+	Label   string              `yaml:"label,omitempty"`
+	Default bool                `yaml:"default,omitempty"`
 	File    string              `yaml:"file"`
-	Require map[string][]string `yaml:"require"`
+	Require map[string][]string `yaml:"require,omitempty"`
 }
 
 // Owner and Name split Repo.
@@ -71,7 +71,7 @@ func (c *Config) Name() string  { _, n, _ := strings.Cut(c.Repo, "/"); return n 
 func Load(root string) (*Config, error) {
 	data, err := os.ReadFile(filepath.Join(root, Path))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("no %s in %s", Path, root)
+		return nil, fmt.Errorf("no %s in %s; run gh board init to create it (gh board init --help lists its flags)", Path, root)
 	}
 	if err != nil {
 		return nil, err

@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/alecthomas/kong"
+	"github.com/cli/go-gh/v2/pkg/prompter"
+	"github.com/cli/go-gh/v2/pkg/term"
 	"github.com/dan-online/gh-board/internal/board"
 )
 
@@ -24,6 +26,7 @@ func (e *env) app() (*board.App, error) {
 type CLI struct {
 	Version kong.VersionFlag `help:"Print the version and exit."`
 
+	Init   InitCmd   `cmd:"" help:"Write .github/board.yml for this repo, creating a project if it has none."`
 	File   FileCmd   `cmd:"" help:"Create an issue on the project with its fields and relations."`
 	Ready  ReadyCmd  `cmd:"" help:"Check an issue against its form and move it to the ready status."`
 	Claim  ClaimCmd  `cmd:"" help:"Claim a ready issue: branch, worktree, empty commit and draft PR."`
@@ -31,6 +34,44 @@ type CLI struct {
 	Next   NextCmd   `cmd:"" help:"List claimable issues that nothing blocks, best first."`
 	Doctor DoctorCmd `cmd:"" help:"Check this machine's token, access, remote and config."`
 	Skill  SkillCmd  `cmd:"" help:"Print the agent guide for this repo's board."`
+}
+
+type InitCmd struct {
+	Remote      string   `default:"origin" help:"Remote whose URL names the repo."`
+	Project     string   `placeholder:"OWNER/NUMBER" help:"Project to use; defaults to the one linked to the repo."`
+	Create      bool     `help:"Allow init to create a project, or add missing Status options. Without a terminal this is the only way to consent."`
+	Force       bool     `help:"Replace an existing .github/board.yml."`
+	New         string   `placeholder:"STATUS" help:"Status option for new issues (default Inbox)."`
+	Ready       string   `placeholder:"STATUS" help:"Status option for issues ready to claim (default Ready)."`
+	Claimed     string   `placeholder:"STATUS" help:"Status option for claimed issues (default In progress)."`
+	Field       []string `sep:"none" placeholder:"NAME" help:"Single-select project field to set and check; repeat for more. Defaults to all of them."`
+	Required    []string `sep:"none" placeholder:"NAME" help:"Field that must be given when filing; repeat for more."`
+	Default     []string `sep:"none" placeholder:"NAME=VALUE" help:"Default value for a field; repeat for more."`
+	Sort        string   `placeholder:"NAME" help:"Field whose option order ranks gh board next (default Priority when present)."`
+	Form        []string `sep:"none" placeholder:"LABEL=FILE" help:"Issue form in .github/ISSUE_TEMPLATE for issues with LABEL; repeat for more."`
+	DefaultForm string   `placeholder:"FILE" help:"Issue form for issues no --form label matches."`
+	Type        []string `sep:"none" help:"Issue type issues may use; repeat for more. Defaults to the repo's enabled types."`
+}
+
+func (c *InitCmd) Help() string {
+	return "Uses the project linked to the repo and reads its Status and single-select fields, the repo's issue types " +
+		"and its issue forms. With no linked project it offers to create one with Status Inbox, Ready, In progress, " +
+		"In review and Done, plus Size and Priority fields. On a terminal it asks; otherwise every choice it cannot make " +
+		"is an error naming the flag to pass, and nothing is written to GitHub without --create."
+}
+
+func (c *InitCmd) Run(e *env) error {
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	var ask board.Asker
+	if term.IsTerminal(os.Stdin) && term.FromEnv().IsTerminalOutput() && os.Getenv("GH_PROMPT_DISABLED") == "" {
+		ask = prompter.New(os.Stdin, os.Stdout, os.Stderr)
+	}
+	return board.Init(dir, board.InitOpts{Remote: c.Remote, Project: c.Project, Create: c.Create, Force: c.Force,
+		New: c.New, Ready: c.Ready, Claimed: c.Claimed, Fields: c.Field, Required: c.Required, Defaults: c.Default,
+		Sort: c.Sort, Forms: c.Form, DefaultForm: c.DefaultForm, Types: c.Type}, ask, os.Stdout)
 }
 
 type FileCmd struct {
