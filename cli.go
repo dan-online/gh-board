@@ -198,8 +198,8 @@ type MergeCmd struct {
 }
 
 func (c *MergeCmd) Help() string {
-	return "Uses GitHub's async merge, which stacked PRs require; gh pr merge refuses them. Merging a PR also lands " +
-		"the stack PRs below it. Waits for the result and exits 4 if the PR only joined a merge queue. Deletes the " +
+	return "Uses GitHub's async merge, which stacked PRs require; gh pr merge refuses them. It refuses a PR that " +
+		"sits above an open PR in its stack, so stacks merge bottom-up and every PR passes its own review. Waits for the result and exits 4 if the PR only joined a merge queue. Deletes the " +
 		"branch afterwards unless another open PR still targets it."
 }
 

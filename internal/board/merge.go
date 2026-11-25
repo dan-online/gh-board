@@ -36,6 +36,14 @@ func (a *App) Merge(n int, reviewed, method string) error {
 	case reviewed != "" && reviewed != pr.Head.SHA:
 		return fmt.Errorf("PR #%d's head is %s, not the reviewed %s; review the new head first", pr.Number, pr.Head.SHA, reviewed)
 	}
+	st, err := a.GH.StackFor(pr.Number)
+	if err != nil {
+		return err
+	}
+	if below := openBelow(st, pr.Number); below != 0 {
+		// Merging lands every PR below too, and those may not have passed review or CI.
+		return fmt.Errorf("PR #%d sits above open PR #%d in stack %d; merge the stack bottom-up, starting with #%d", pr.Number, below, st.Number, below)
+	}
 	m, err := a.GH.MergeAsync(pr.Number, method, pr.Head.SHA)
 	if err != nil {
 		if gh.Definite(err) {
@@ -76,4 +84,20 @@ func (a *App) Merge(n int, reviewed, method string) error {
 		a.notef("could not delete branch %s; it moved or the push failed\n", branch)
 	}
 	return nil
+}
+
+// openBelow returns the lowest open PR under pr in its stack, or 0.
+func openBelow(st *gh.Stack, pr int) int {
+	if st == nil {
+		return 0
+	}
+	for _, p := range st.PullRequests {
+		if p.Number == pr {
+			return 0
+		}
+		if p.State == "open" {
+			return p.Number
+		}
+	}
+	return 0
 }
