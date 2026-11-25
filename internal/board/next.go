@@ -8,10 +8,13 @@ import (
 )
 
 type Candidate struct {
-	Number int               `json:"number"`
-	Title  string            `json:"title"`
-	URL    string            `json:"url"`
-	Fields map[string]string `json:"fields"`
+	Number  int               `json:"number"`
+	Title   string            `json:"title"`
+	URL     string            `json:"url"`
+	Fields  map[string]string `json:"fields"`
+	StackOn int               `json:"stack_on,omitempty"` // claim with --on this issue
+
+	blocked bool
 }
 
 // Next lists claimable issues that nothing blocks, best first.
@@ -22,6 +25,9 @@ func (a *App) Next(limit int, asJSON bool) error {
 	}
 	list, err := a.unlocked(a.queue(items))
 	if err != nil {
+		return err
+	}
+	if list, err = a.stackHints(list); err != nil {
 		return err
 	}
 	if limit > 0 && len(list) > limit {
@@ -36,21 +42,27 @@ func (a *App) Next(limit int, asJSON bool) error {
 		return enc.Encode(list)
 	}
 	for _, c := range list {
-		a.printf("#%d\t%s\n", c.Number, c.Title)
+		if c.StackOn != 0 {
+			a.printf("#%d\t%s\tstack on #%d\n", c.Number, c.Title, c.StackOn)
+		} else {
+			a.printf("#%d\t%s\n", c.Number, c.Title)
+		}
 	}
 	return nil
 }
 
 // queue filters and ranks items. Ranking is by the queue field's option
 // order, unset last, then board position, which the stable sort keeps.
+// Issues with open blockers stay in, marked, for stackHints to settle.
 func (a *App) queue(items []gh.Item) []Candidate {
 	var list []Candidate
 	for i := range items {
 		it := &items[i]
-		if it.Archived || it.Issue.Dependencies.BlockedBy > 0 || a.eligible(&it.Issue, it) != nil {
+		if it.Archived || a.eligible(&it.Issue, it) != nil {
 			continue
 		}
-		list = append(list, Candidate{Number: it.Issue.Number, Title: it.Issue.Title, URL: it.Issue.HTMLURL, Fields: it.Values})
+		list = append(list, Candidate{Number: it.Issue.Number, Title: it.Issue.Title, URL: it.Issue.HTMLURL,
+			Fields: it.Values, blocked: it.Issue.Dependencies.BlockedBy > 0})
 	}
 	if a.Cfg.Queue != nil {
 		order := a.Cfg.Fields[a.Cfg.Queue.Sort].Options
@@ -86,6 +98,36 @@ func (a *App) unlocked(list []Candidate) ([]Candidate, error) {
 			}
 		}
 		out = append(out, c)
+	}
+	return out, nil
+}
+
+// stackHints keeps a blocked candidate only when it can stack on its one open
+// blocker's claim, and records which issue that is.
+func (a *App) stackHints(list []Candidate) ([]Candidate, error) {
+	var out []Candidate
+	for _, c := range list {
+		if !c.blocked {
+			out = append(out, c)
+			continue
+		}
+		blockers, err := a.GH.BlockedBy(c.Number)
+		if err != nil {
+			return nil, err
+		}
+		var open []int
+		for _, b := range blockers {
+			if b.State == "open" {
+				open = append(open, b.Number)
+			}
+		}
+		if len(open) != 1 {
+			continue
+		}
+		if _, err := a.stackParentOf(c.Number, open[0], blockers); err == nil {
+			c.StackOn = open[0]
+			out = append(out, c)
+		}
 	}
 	return out, nil
 }

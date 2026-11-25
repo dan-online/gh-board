@@ -59,6 +59,8 @@ gh board status 42 "In review"
 
 Each claim takes a lock, the ref `refs/claims/42`, pushed with a lease, so two machines claiming the same issue can't both win. The ref doesn't show up in branch lists or start any workflows. `gh board check` lists locks next to their PRs and Statuses, and `gh board release 42 --sha SHA` clears a lock whose claim died before opening its PR.
 
+If 43 is blocked only by 42 and 42 already has a claim PR, `gh board next` shows `stack on #42`, and `gh board claim 43 "feat: ..." --on 42` builds on 42's branch and puts both PRs in a GitHub stack. Stacked PRs can't be merged with `gh pr merge`, so merge with `gh board merge 42 --sha REVIEWED_HEAD`. It works for any claimed PR, waits for the merge and deletes the branch once nothing targets it.
+
 `gh board skill` prints a guide for agents, with the repo's own fields and forms filled in. Point your agent instructions at it rather than copying the commands around.
 
 ## Development

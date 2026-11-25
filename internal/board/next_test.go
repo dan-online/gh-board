@@ -56,13 +56,19 @@ func TestQueue(t *testing.T) {
 		item(9, "Ready", "Next"),
 		item(10, "Ready", "Now"),
 	}
-	var got []int
+	var got, marked []int
 	for _, c := range a.queue(items) {
 		got = append(got, c.Number)
+		if c.blocked {
+			marked = append(marked, c.Number)
+		}
 	}
-	// Now before Next before unset; board order within each.
-	if want := []int{3, 10, 1, 9, 2}; !slices.Equal(got, want) {
+	// Now before Next before unset; board order within each. Blocked issues stay, marked.
+	if want := []int{3, 5, 10, 1, 9, 2}; !slices.Equal(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+	if !slices.Equal(marked, []int{5}) {
+		t.Fatalf("marked blocked %v", marked)
 	}
 }
 

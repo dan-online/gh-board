@@ -9,6 +9,7 @@ type PR struct {
 	Number   int     `json:"number"`
 	HTMLURL  string  `json:"html_url"`
 	State    string  `json:"state"`
+	Draft    bool    `json:"draft"`
 	Body     string  `json:"body"`
 	Merged   bool    `json:"merged"`
 	MergedAt *string `json:"merged_at"`

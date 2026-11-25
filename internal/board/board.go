@@ -40,6 +40,7 @@ type App struct {
 	GH      *gh.Client
 	Git     git.Git
 	Out     io.Writer
+	Err     io.Writer // notes that are not command output
 	Version string
 }
 
@@ -61,10 +62,16 @@ func Open(dir, version string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{Cfg: cfg, GH: client, Git: git.Git{Dir: root}, Out: os.Stdout, Version: version}, nil
+	return &App{Cfg: cfg, GH: client, Git: git.Git{Dir: root}, Out: os.Stdout, Err: os.Stderr, Version: version}, nil
 }
 
 func (a *App) printf(format string, args ...any) { _, _ = fmt.Fprintf(a.Out, format, args...) }
+
+func (a *App) notef(format string, args ...any) {
+	if a.Err != nil {
+		_, _ = fmt.Fprintf(a.Err, format, args...)
+	}
+}
 
 // checkRemote fails unless the remote's fetch and push URLs both point at the board's repo.
 func (a *App) checkRemote() error {

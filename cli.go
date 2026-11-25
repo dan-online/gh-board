@@ -33,6 +33,7 @@ type CLI struct {
 	Status  StatusCmd  `cmd:"" help:"Set an issue's project Status."`
 	Check   CheckCmd   `cmd:"" help:"Report claim locks, PRs and Statuses that disagree. Changes nothing."`
 	Release ReleaseCmd `cmd:"" help:"Delete an issue's claim lock, only while it holds the given commit."`
+	Merge   MergeCmd   `cmd:"" help:"Merge an issue's claim PR, stacked or not, and delete its branch."`
 	Next    NextCmd    `cmd:"" help:"List claimable issues that nothing blocks, best first."`
 	Doctor  DoctorCmd  `cmd:"" help:"Check this machine's token, access, remote and config."`
 	Skill   SkillCmd   `cmd:"" help:"Print the agent guide for this repo's board."`
@@ -123,6 +124,7 @@ type ClaimCmd struct {
 	Title string `arg:"" help:"PR title, and so the squash commit subject: a conventional commit such as 'feat(api): add jobs'."`
 	Slug  string `arg:"" optional:"" help:"Branch slug; defaults to the slugified issue title."`
 	Refs  bool   `help:"Write Refs #N instead of Closes #N, for issues that close after a deploy."`
+	On    int    `placeholder:"ISSUE" help:"Stack on this issue's claim PR: it must be the only open blocker, and its PR open and on top of its stack."`
 }
 
 func (c *ClaimCmd) Help() string {
@@ -131,7 +133,8 @@ func (c *ClaimCmd) Help() string {
 		"whose PR is merged or closed is taken over. Then creates branch ISSUE-SLUG at that commit and a worktree under " +
 		"the main checkout, pushes the branch, opens a draft PR and sets the claimed status. Prints the worktree path and " +
 		"the PR URL. A failure removes only what this claim made and releases its lock; a write with no clear outcome " +
-		"keeps everything and exits 4."
+		"keeps everything and exits 4. With --on, the branch starts from the blocking issue's PR head, the draft PR " +
+		"targets that branch, and both PRs join one GitHub stack, which GitHub retargets and rebases as lower PRs merge."
 }
 
 func (c *ClaimCmd) Run(e *env) error {
@@ -139,7 +142,7 @@ func (c *ClaimCmd) Run(e *env) error {
 	if err != nil {
 		return err
 	}
-	return a.Claim(board.ClaimOpts{Number: c.Issue, Title: c.Title, Slug: c.Slug, Refs: c.Refs})
+	return a.Claim(board.ClaimOpts{Number: c.Issue, Title: c.Title, Slug: c.Slug, Refs: c.Refs, On: c.On})
 }
 
 type StatusCmd struct {
@@ -188,13 +191,34 @@ func (c *ReleaseCmd) Run(e *env) error {
 	return a.Release(c.Issue, c.SHA)
 }
 
+type MergeCmd struct {
+	Issue  int    `arg:"" help:"Issue number."`
+	SHA    string `name:"sha" help:"Head commit the review approved; the merge refuses any other head."`
+	Method string `default:"squash" enum:"squash,merge,rebase" help:"Merge method (squash, merge or rebase)."`
+}
+
+func (c *MergeCmd) Help() string {
+	return "Uses GitHub's async merge, which stacked PRs require; gh pr merge refuses them. Merging a PR also lands " +
+		"the stack PRs below it. Waits for the result and exits 4 if the PR only joined a merge queue. Deletes the " +
+		"branch afterwards unless another open PR still targets it."
+}
+
+func (c *MergeCmd) Run(e *env) error {
+	a, err := e.app()
+	if err != nil {
+		return err
+	}
+	return a.Merge(c.Issue, c.SHA, c.Method)
+}
+
 type NextCmd struct {
 	Limit int  `default:"10" help:"Show at most this many issues; 0 shows all."`
 	JSON  bool `name:"json" help:"Print JSON."`
 }
 
 func (c *NextCmd) Help() string {
-	return "Lists open issues in the ready status with no open blockers, no open linked PR and no live claim lock. Ranks them by the " +
+	return "Lists open issues in the ready status with no open blockers, no open linked PR and no live claim lock, plus " +
+		"issues whose only open blocker has a claim PR to stack on, marked 'stack on #M'. Ranks them by the " +
 		"config's queue field, unset last, then board position. The list is advice: claim checks again."
 }
 

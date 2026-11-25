@@ -29,7 +29,10 @@ func skill(app *kong.Application, a *board.App) string {
 	w("2. When every required section is filled, run `gh board ready N`. It names each missing section or field.\n")
 	w("3. Pick work with `gh board next`, then `gh board claim N 'type(scope): subject'`. The title becomes the squash commit subject.\n")
 	w("4. Claim prints two lines: the worktree path, then the draft PR URL. Work and commit in that worktree and push its branch.\n")
-	w("5. Move the issue on with `gh board status N STATUS` as the PR goes to review and merges.\n\n")
+	w("5. Move the issue on with `gh board status N STATUS` as the PR goes to review, and merge with `gh board merge N --sha REVIEWED_HEAD`.\n\n")
+	w("## Stacking\n\n")
+	w("When `next` shows `stack on #M`, claim with `gh board claim N TITLE --on M` to start before #M merges. Your branch starts at #M's PR head and your PR joins #M's GitHub stack. ")
+	w("When #M's branch changes, run `gh stack rebase` in your worktree and push. Merge bottom-up with `gh board merge`; `gh pr merge` refuses stacked PRs. GitHub retargets your PR to the default branch once #M lands, and its closing keyword works as usual.\n\n")
 	w("Every command reads GitHub first and keeps no local state. Run `gh board doctor` on a new machine before claiming.\n\n")
 
 	w("## Commands\n\n")

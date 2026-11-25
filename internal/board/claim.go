@@ -1,6 +1,7 @@
 package board
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ type ClaimOpts struct {
 	Title  string // PR title, and so the squash commit subject
 	Slug   string
 	Refs   bool // write Refs #N, so merging leaves the issue open
+	On     int  // stack on this blocking issue's claim PR instead of the default branch
 }
 
 // claimAPI is the GitHub side of a claim after its lock.
@@ -23,6 +25,17 @@ type claimAPI interface {
 	ClosePR(number int) error
 	PRsForBranch(branch string) ([]gh.PR, error)
 	SetFields(itemID int64, values map[string]string) error
+	StackFor(pr int) (*gh.Stack, error)
+	CreateStack(prs ...int) (*gh.Stack, error)
+	AddToStack(stack int, prs ...int) (*gh.Stack, error)
+}
+
+// parent is the claim a stacked claim builds on.
+type parent struct {
+	issue int
+	pr    *gh.PR
+	stack *gh.Stack // nil when the parent's PR is in no stack yet
+	head  string    // the parent's head when this claim started
 }
 
 // claim is one attempt's state, kept so a failure undoes exactly what it made.
@@ -36,6 +49,7 @@ type claim struct {
 	pushed   bool
 	pr       *gh.PR
 	local    bool // this attempt created the local branch
+	stacked  bool // this attempt's PR is in a stack, so rollback must not close it
 }
 
 // Claim takes the issue's lock, then creates the branch, worktree and draft PR.
@@ -86,6 +100,13 @@ func (a *App) Claim(o ClaimOpts) error {
 		return fmt.Errorf("worktree path already exists: %s", c.worktree)
 	}
 	remote, base := a.Cfg.Remote, repo.DefaultBranch
+	var up *parent
+	if o.On != 0 {
+		if up, err = a.stackParent(o.Number, o.On); err != nil {
+			return err
+		}
+		base = up.pr.Head.Ref
+	}
 	if _, err := a.Git.Run("fetch", remote, base); err != nil {
 		return err
 	}
@@ -97,6 +118,9 @@ func (a *App) Claim(o ClaimOpts) error {
 	baseSHA, err := a.Git.Run("rev-parse", remote+"/"+base)
 	if err != nil {
 		return err
+	}
+	if up != nil {
+		up.head = baseSHA
 	}
 
 	// The lock decides who holds the issue. Everything after it belongs to this attempt.
@@ -117,12 +141,12 @@ func (a *App) Claim(o ClaimOpts) error {
 		}
 		return exitf(ExitHeld, "issue #%d was claimed first: %s", o.Number, other)
 	}
-	return c.finish(o, item, base)
+	return c.finish(o, item, base, up)
 }
 
 // finish runs the steps after the lock. A definite failure undoes them and
 // releases the lock; an unknown outcome keeps everything for gh board check.
-func (c *claim) finish(o ClaimOpts, item *gh.Item, base string) error {
+func (c *claim) finish(o ClaimOpts, item *gh.Item, base string, up *parent) error {
 	a := c.a
 	if _, err := a.Git.Run("worktree", "add", "-b", c.branch, c.worktree, c.lock.SHA); err != nil {
 		return c.fail(err)
@@ -155,6 +179,11 @@ func (c *claim) finish(o ClaimOpts, item *gh.Item, base string) error {
 		}
 		c.pr = found
 	}
+	if up != nil {
+		if err := c.register(up); err != nil {
+			return err
+		}
+	}
 	if err := c.gh.SetFields(item.ID, map[string]string{"Status": a.Cfg.Statuses.Claimed}); err != nil {
 		if gh.Definite(err) {
 			return c.fail(fmt.Errorf("set Status %s: %w", a.Cfg.Statuses.Claimed, err))
@@ -180,6 +209,10 @@ func (c *claim) keep(step string, err error) error {
 // what lets the next claim take the lock over. If any undo fails, the PR stays
 // open and the lock stays, so no one claims over the leftovers.
 func (c *claim) fail(cause error) error {
+	if c.stacked {
+		// Closing a PR in the middle of a stack blocks every PR above it.
+		return c.keep("the claim after its PR joined the stack", cause)
+	}
 	a := c.a
 	var left []string
 	if c.pushed {
@@ -233,4 +266,80 @@ func describePR(pr *gh.PR) string {
 		return ", no PR yet"
 	}
 	return fmt.Sprintf(", PR #%d %s", pr.Number, pr.State)
+}
+
+// stackParent checks that issue m can carry a stacked claim of n: m is n's only
+// open blocker and its claim PR is open and on top of its stack, or unstacked.
+func (a *App) stackParent(n, m int) (*parent, error) {
+	blockers, err := a.GH.BlockedBy(n)
+	if err != nil {
+		return nil, err
+	}
+	return a.stackParentOf(n, m, blockers)
+}
+
+// stackParentOf is stackParent for blockers already read.
+func (a *App) stackParentOf(n, m int, blockers []gh.Issue) (*parent, error) {
+	isBlocker := false
+	for _, b := range blockers {
+		switch {
+		case b.Number == m && b.State == "open":
+			isBlocker = true
+		case b.Number != m && b.State == "open":
+			return nil, fmt.Errorf("--on #%d: #%d is also blocked by open #%d", m, n, b.Number)
+		}
+	}
+	if !isBlocker {
+		return nil, fmt.Errorf("--on #%d: #%d is not an open blocker of #%d", m, m, n)
+	}
+	l, err := a.readLock(m)
+	if err != nil {
+		return nil, err
+	}
+	if l == nil {
+		return nil, fmt.Errorf("--on #%d: #%d has no claim to stack on", m, m)
+	}
+	pr, err := a.lockPR(l)
+	if err != nil {
+		return nil, err
+	}
+	if pr == nil || pr.State != "open" {
+		return nil, fmt.Errorf("--on #%d: #%d's claim has no open PR%s", m, m, describePR(pr))
+	}
+	st, err := a.GH.StackFor(pr.Number)
+	if err != nil {
+		return nil, err
+	}
+	if st != nil && st.Top() != pr.Number {
+		return nil, fmt.Errorf("--on #%d: PR #%d is not the top of stack %d, and stacks are linear; wait for #%d or split the work",
+			m, pr.Number, st.Number, m)
+	}
+	return &parent{issue: m, pr: pr, stack: st}, nil
+}
+
+// register puts this attempt's PR on top of the parent's, in a new stack or the parent's.
+func (c *claim) register(up *parent) error {
+	var err error
+	if up.stack == nil {
+		_, err = c.gh.CreateStack(up.pr.Number, c.pr.Number)
+	} else {
+		_, err = c.gh.AddToStack(up.stack.Number, c.pr.Number)
+	}
+	st, readErr := c.gh.StackFor(c.pr.Number)
+	switch {
+	case readErr != nil:
+		return c.keep("register the stack", errors.Join(err, readErr))
+	case st == nil && (err == nil || gh.Definite(err)):
+		return c.fail(fmt.Errorf("stack PR #%d on #%d: %w", c.pr.Number, up.pr.Number, errors.Join(err, errors.New("the PR is in no stack"))))
+	case st == nil:
+		return c.keep("register the stack", err)
+	}
+	c.stacked = true
+	if below := st.Below(c.pr.Number); below != up.pr.Number && below != 0 {
+		return c.keep("register the stack", fmt.Errorf("PR #%d landed above #%d, not #%d", c.pr.Number, below, up.pr.Number))
+	}
+	if now, err := c.a.remoteRef("refs/heads/" + up.pr.Head.Ref); err == nil && now != "" && now != up.head {
+		c.a.notef("#%d's branch moved during the claim; restack with: gh stack rebase\n", up.issue)
+	}
+	return nil
 }
