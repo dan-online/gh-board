@@ -29,13 +29,16 @@ func main() {
 			"Reads .github/board.yml from the current checkout. Needs a gh token with the project scope, "+
 			"write access to the project, and git push access to the board's repo. Run gh board skill for the full guide."),
 		kong.Vars{"version": version},
-		kong.UsageOnError(),
 		kong.Exit(func(code int) { os.Exit(code) }),
 	)
 	if err != nil {
 		panic(err)
 	}
-	ctx, err := parser.Parse(os.Args[1:])
+	args := os.Args[1:]
+	if len(args) == 0 {
+		args = []string{"--help"}
+	}
+	ctx, err := parser.Parse(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(board.ExitUsage)
