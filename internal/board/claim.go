@@ -214,6 +214,13 @@ func (c *claim) fail(cause error) error {
 		// Closing a PR in the middle of a stack blocks every PR above it.
 		return c.keep("the claim after its PR joined the stack", cause)
 	}
+	if c.pr != nil {
+		// Someone may have stacked the PR since it was opened. Check before
+		// undoing anything; closing it would block the PRs above it.
+		if st, err := c.gh.StackFor(c.pr.Number); err != nil || st != nil {
+			return c.keep("roll back a PR that may be in a stack", errors.Join(cause, err))
+		}
+	}
 	a := c.a
 	var left []string
 	if c.pushed {
@@ -229,10 +236,6 @@ func (c *claim) fail(cause error) error {
 		}
 	}
 	if c.pr != nil && len(left) == 0 {
-		// Someone may have stacked the PR since it was opened; closing it would block the PRs above.
-		if st, err := c.gh.StackFor(c.pr.Number); err != nil || st != nil {
-			return c.keep("roll back a PR that may be in a stack", errors.Join(cause, err))
-		}
 		if err := c.gh.ClosePR(c.pr.Number); err != nil {
 			left = append(left, fmt.Sprintf("close PR #%d", c.pr.Number))
 		}

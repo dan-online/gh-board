@@ -328,6 +328,9 @@ func TestRollbackKeepsAPRThatJoinedAStack(t *testing.T) {
 	if len(api.closed) != 0 || remoteHas(t, remote, c.lock.Ref) != c.lock.SHA {
 		t.Fatalf("closed %v after the PR joined a stack: %v", api.closed, err)
 	}
+	if remoteHas(t, remote, "refs/heads/"+c.branch) != c.lock.SHA {
+		t.Fatal("deleted the branch of a PR that is in a stack")
+	}
 }
 
 func TestStackedClaimNeverClosesARegisteredPR(t *testing.T) {
