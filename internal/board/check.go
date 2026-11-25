@@ -1,0 +1,79 @@
+package board
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/dan-online/gh-board/internal/gh"
+)
+
+// Check reports where locks, PRs and Status disagree. It changes nothing.
+func (a *App) Check() error {
+	locks, err := a.remoteRefs("refs/claims/*")
+	if err != nil {
+		return err
+	}
+	items, err := a.GH.Items()
+	if err != nil {
+		return err
+	}
+	byNumber := map[int]*gh.Item{}
+	for i := range items {
+		byNumber[items[i].Issue.Number] = &items[i]
+	}
+	locked := map[int]bool{}
+	problems := 0
+	for _, ref := range slices.Sorted(maps.Keys(locks)) {
+		n, err := strconv.Atoi(strings.TrimPrefix(ref, "refs/claims/"))
+		if err != nil {
+			continue
+		}
+		locked[n] = true
+		l, err := a.describeLock(ref, locks[ref])
+		if err != nil {
+			a.printf("#%d\t%s: %v\n", n, ref, err)
+			problems++
+			continue
+		}
+		pr, err := a.lockPR(l)
+		if err != nil {
+			return err
+		}
+		state, status := "", ""
+		if it := byNumber[n]; it != nil {
+			state, status = it.Issue.State, it.Values["Status"]
+		} else if issue, err := a.GH.Issue(n); err == nil {
+			state = issue.State
+		}
+		var note string
+		switch {
+		case state == "closed":
+			note = "issue closed; the lock blocks nothing"
+		case pr == nil:
+			note = "setup or orphan: no PR for this attempt. Release it once the claiming session has stopped: gh board release " + strconv.Itoa(n) + " --sha " + l.SHA
+			problems++
+		case pr.State == "closed":
+			note = fmt.Sprintf("PR #%d %s; the next claim takes the lock over", pr.Number, map[bool]string{true: "merged", false: "closed"}[pr.MergedAt != nil])
+		default:
+			note = fmt.Sprintf("PR #%d open", pr.Number)
+			if status == a.Cfg.Statuses.Ready {
+				note += fmt.Sprintf("; Status is still %s", status)
+				problems++
+			}
+		}
+		a.printf("#%d\t%s\t%s\n", n, l, note)
+	}
+	for _, it := range items {
+		if it.Values["Status"] == a.Cfg.Statuses.Claimed && it.Issue.State == "open" && !locked[it.Issue.Number] {
+			a.printf("#%d\t%s with no lock\n", it.Issue.Number, a.Cfg.Statuses.Claimed)
+			problems++
+		}
+	}
+	if problems == 0 {
+		a.printf("no drift\n")
+	}
+	return nil
+}

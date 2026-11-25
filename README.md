@@ -57,6 +57,8 @@ gh board status 42 "In review"
 
 `claim` prints the worktree path and the draft PR URL. Pass `--refs` to write `Refs #42` instead of `Closes #42` for work that only closes after a deploy.
 
+Each claim takes a lock, the ref `refs/claims/42`, pushed with a lease, so two machines claiming the same issue can't both win. The ref doesn't show up in branch lists or start any workflows. `gh board check` lists locks next to their PRs and Statuses, and `gh board release 42 --sha SHA` clears a lock whose claim died before opening its PR.
+
 `gh board skill` prints a guide for agents, with the repo's own fields and forms filled in. Point your agent instructions at it rather than copying the commands around.
 
 ## Development

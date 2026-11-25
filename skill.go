@@ -58,13 +58,15 @@ func skill(app *kong.Application, a *board.App) string {
 	w("## Exit codes\n\n")
 	w("- 0: done.\n- 1: failed; the message says why and nothing more is needed to retry.\n")
 	w("- %d: bad arguments.\n", board.ExitUsage)
-	w("- %d: another claim holds the issue. Pick other work.\n", board.ExitHeld)
+	w("- %d: another claim holds the issue; the message names its branch, machine and PR. Pick other work.\n", board.ExitHeld)
 	w("- %d: a write's outcome is unknown, for example after a timeout. Do not repeat the command blindly; look first.\n\n", board.ExitIncomplete)
 
 	w("## When something fails\n\n")
 	w("- `file` printed a URL and then failed: the issue exists. The message lists the writes still missing; make them by hand or with `gh board status`. Never file it again.\n")
 	w("- `file` exited %d without a URL: the issue may exist. Search the repo's issues for the title before filing again.\n", board.ExitIncomplete)
-	w("- `claim` failed: it removed what it made and says so. If it warns that the Status may still be claimed, reset it with the command it prints, unless another claim holds the issue.\n")
+	w("- `claim` failed: it removed what it made and released its lock, or says which steps it could not undo.\n")
+	w("- `claim` exited %d: some write had no clear outcome, so it kept the lock and everything else. Run `gh board check`, finish the claim by hand, or release the lock with the command it printed once nothing of the attempt remains.\n", board.ExitIncomplete)
+	w("- A lock with no PR in `gh board check` is a claim still setting up, or one whose session died. Release it only after confirming that session has stopped.\n")
 	w("- A rate limit message: wait for the time it gives. gh board already waits out short secondary limits.\n")
 	w("- `min_version`: this machine runs an older gh-board than the repo needs; reinstall at the version the message names.\n\n")
 

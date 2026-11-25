@@ -77,7 +77,7 @@ func (c *Client) Field(name string) (*Field, error) {
 			return &fields[i], nil
 		}
 	}
-	return nil, fmt.Errorf("project field %s not found", name)
+	return nil, localf("project field %s not found", name)
 }
 
 // Item is an issue's card on the project.
@@ -223,7 +223,7 @@ func (c *Client) SetFields(itemID int64, values map[string]string) error {
 		}
 		idx := slices.IndexFunc(f.Options, func(o Option) bool { return o.Name.Raw == values[name] })
 		if idx < 0 {
-			return fmt.Errorf("project field %s has no option %q; options: %s", name, values[name], strings.Join(f.OptionNames(), ", "))
+			return localf("project field %s has no option %q; options: %s", name, values[name], strings.Join(f.OptionNames(), ", "))
 		}
 		updates = append(updates, map[string]any{"id": f.ID, "value": f.Options[idx].ID})
 	}

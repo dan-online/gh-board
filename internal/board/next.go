@@ -20,7 +20,10 @@ func (a *App) Next(limit int, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	list := a.queue(items)
+	list, err := a.unlocked(a.queue(items))
+	if err != nil {
+		return err
+	}
 	if limit > 0 && len(list) > limit {
 		list = list[:limit]
 	}
@@ -60,4 +63,29 @@ func (a *App) queue(items []gh.Item) []Candidate {
 		slices.SortStableFunc(list, func(x, y Candidate) int { return rank(x) - rank(y) })
 	}
 	return list
+}
+
+// unlocked drops candidates whose lock is still live: no PR yet, or an open one.
+func (a *App) unlocked(list []Candidate) ([]Candidate, error) {
+	locks, err := a.remoteRefs("refs/claims/*")
+	if err != nil || len(locks) == 0 {
+		return list, err
+	}
+	var out []Candidate
+	for _, c := range list {
+		ref := lockRef(c.Number)
+		if sha, ok := locks[ref]; ok {
+			l, err := a.describeLock(ref, sha)
+			if err != nil {
+				return nil, err
+			}
+			if done, _, err := a.takeable(l); err != nil {
+				return nil, err
+			} else if !done {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }

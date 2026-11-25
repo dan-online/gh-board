@@ -26,14 +26,16 @@ func (e *env) app() (*board.App, error) {
 type CLI struct {
 	Version kong.VersionFlag `help:"Print the version and exit."`
 
-	Init   InitCmd   `cmd:"" help:"Write .github/board.yml for this repo, creating a project if it has none."`
-	File   FileCmd   `cmd:"" help:"Create an issue on the project with its fields and relations."`
-	Ready  ReadyCmd  `cmd:"" help:"Check an issue against its form and move it to the ready status."`
-	Claim  ClaimCmd  `cmd:"" help:"Claim a ready issue: branch, worktree, empty commit and draft PR."`
-	Status StatusCmd `cmd:"" help:"Set an issue's project Status."`
-	Next   NextCmd   `cmd:"" help:"List claimable issues that nothing blocks, best first."`
-	Doctor DoctorCmd `cmd:"" help:"Check this machine's token, access, remote and config."`
-	Skill  SkillCmd  `cmd:"" help:"Print the agent guide for this repo's board."`
+	Init    InitCmd    `cmd:"" help:"Write .github/board.yml for this repo, creating a project if it has none."`
+	File    FileCmd    `cmd:"" help:"Create an issue on the project with its fields and relations."`
+	Ready   ReadyCmd   `cmd:"" help:"Check an issue against its form and move it to the ready status."`
+	Claim   ClaimCmd   `cmd:"" help:"Claim a ready issue: branch, worktree, empty commit and draft PR."`
+	Status  StatusCmd  `cmd:"" help:"Set an issue's project Status."`
+	Check   CheckCmd   `cmd:"" help:"Report claim locks, PRs and Statuses that disagree. Changes nothing."`
+	Release ReleaseCmd `cmd:"" help:"Delete an issue's claim lock, only while it holds the given commit."`
+	Next    NextCmd    `cmd:"" help:"List claimable issues that nothing blocks, best first."`
+	Doctor  DoctorCmd  `cmd:"" help:"Check this machine's token, access, remote and config."`
+	Skill   SkillCmd   `cmd:"" help:"Print the agent guide for this repo's board."`
 }
 
 type InitCmd struct {
@@ -124,9 +126,12 @@ type ClaimCmd struct {
 }
 
 func (c *ClaimCmd) Help() string {
-	return "Requires the ready status and no open linked PR. Fetches the default branch, creates branch ISSUE-SLUG " +
-		"and a worktree under the main checkout, makes the empty commit 'chore: claim #ISSUE', pushes it, opens a draft PR " +
-		"and sets the claimed status. Prints the worktree path and the PR URL. On failure it removes only what this claim made."
+	return "Requires the ready status and no open linked PR. Takes the lock refs/claims/ISSUE with a commit " +
+		"'chore: claim #ISSUE' on the freshly fetched default branch; only one claim can win it, on any machine. A lock " +
+		"whose PR is merged or closed is taken over. Then creates branch ISSUE-SLUG at that commit and a worktree under " +
+		"the main checkout, pushes the branch, opens a draft PR and sets the claimed status. Prints the worktree path and " +
+		"the PR URL. A failure removes only what this claim made and releases its lock; a write with no clear outcome " +
+		"keeps everything and exits 4."
 }
 
 func (c *ClaimCmd) Run(e *env) error {
@@ -150,13 +155,46 @@ func (c *StatusCmd) Run(e *env) error {
 	return a.Status(c.Issue, c.Status)
 }
 
+type CheckCmd struct{}
+
+func (c *CheckCmd) Help() string {
+	return "Lists every lock with its attempt, host, age, branch and PR, flags locks with no PR, claim PRs whose " +
+		"Status never moved, and claimed issues with no lock."
+}
+
+func (c *CheckCmd) Run(e *env) error {
+	a, err := e.app()
+	if err != nil {
+		return err
+	}
+	return a.Check()
+}
+
+type ReleaseCmd struct {
+	Issue int    `arg:"" help:"Issue number."`
+	SHA   string `required:"" name:"sha" help:"Commit the lock must still hold, from gh board check."`
+}
+
+func (c *ReleaseCmd) Help() string {
+	return "Use it for a lock whose claim never opened a PR, after confirming the claiming session has stopped. " +
+		"The delete is conditional, so a lock that changed since the check stays."
+}
+
+func (c *ReleaseCmd) Run(e *env) error {
+	a, err := e.app()
+	if err != nil {
+		return err
+	}
+	return a.Release(c.Issue, c.SHA)
+}
+
 type NextCmd struct {
 	Limit int  `default:"10" help:"Show at most this many issues; 0 shows all."`
 	JSON  bool `name:"json" help:"Print JSON."`
 }
 
 func (c *NextCmd) Help() string {
-	return "Lists open issues in the ready status with no open blockers and no open linked PR. Ranks them by the " +
+	return "Lists open issues in the ready status with no open blockers, no open linked PR and no live claim lock. Ranks them by the " +
 		"config's queue field, unset last, then board position. The list is advice: claim checks again."
 }
 

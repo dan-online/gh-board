@@ -52,12 +52,21 @@ func transport() http.RoundTripper {
 		github_secondary_ratelimit.WithTotalSleepLimit(3*time.Minute, nil))
 }
 
-// Definite reports whether err is a response that GitHub rejected,
-// so the write did not happen. A timeout or a 5xx is not definite.
+// Definite reports whether err means the write did not happen: GitHub rejected
+// it, or it failed before any request was sent. A timeout or a 5xx is not definite.
 func Definite(err error) bool {
 	var httpErr *api.HTTPError
-	return errors.As(err, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500
+	var local *LocalError
+	return errors.As(err, &local) || errors.As(err, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500
 }
+
+// LocalError is a failure before any request was sent.
+type LocalError struct{ Err error }
+
+func (e *LocalError) Error() string { return e.Err.Error() }
+func (e *LocalError) Unwrap() error { return e.Err }
+
+func localf(format string, a ...any) error { return &LocalError{Err: fmt.Errorf(format, a...)} }
 
 // NotFound reports whether err is a 404.
 func NotFound(err error) bool {

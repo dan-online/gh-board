@@ -17,26 +17,49 @@ type ClaimOpts struct {
 	Refs   bool // write Refs #N, so merging leaves the issue open
 }
 
-// claim is one attempt's state, kept so a failure can undo exactly what it made.
+// claimAPI is the GitHub side of a claim after its lock.
+type claimAPI interface {
+	CreatePR(title, head, base, body string) (*gh.PR, error)
+	ClosePR(number int) error
+	PRsForBranch(branch string) ([]gh.PR, error)
+	SetFields(itemID int64, values map[string]string) error
+}
+
+// claim is one attempt's state, kept so a failure undoes exactly what it made.
 type claim struct {
 	a        *App
+	gh       claimAPI
 	number   int
 	branch   string
 	worktree string
-	sha      string
+	lock     lock
 	pushed   bool
 	pr       *gh.PR
-	moved    bool
 }
 
-// Claim creates the branch, worktree, empty commit and draft PR for a ready issue.
-func (a *App) Claim(o ClaimOpts) (err error) {
+// Claim takes the issue's lock, then creates the branch, worktree and draft PR.
+func (a *App) Claim(o ClaimOpts) error {
 	issue, item, err := a.item(o.Number)
 	if err != nil {
 		return err
 	}
 	if err := a.eligible(issue, item); err != nil {
 		return err
+	}
+	held, err := a.readLock(o.Number)
+	if err != nil {
+		return err
+	}
+	expect := ""
+	if held != nil {
+		done, pr, err := a.takeable(held)
+		if err != nil {
+			return err
+		}
+		if !done {
+			return exitf(ExitHeld, "issue #%d is claimed: %s%s", o.Number, held, describePR(pr))
+		}
+		expect = held.SHA
 	}
 	slug := o.Slug
 	if slug == "" {
@@ -56,7 +79,7 @@ func (a *App) Claim(o ClaimOpts) (err error) {
 	if err != nil {
 		return err
 	}
-	c := &claim{a: a, number: o.Number, branch: fmt.Sprintf("%d-%s", o.Number, slug)}
+	c := &claim{a: a, gh: a.GH, number: o.Number, branch: fmt.Sprintf("%d-%s", o.Number, slug)}
 	c.worktree = filepath.Join(main, a.Cfg.Worktrees, c.branch)
 	if _, err := os.Lstat(c.worktree); err == nil {
 		return fmt.Errorf("worktree path already exists: %s", c.worktree)
@@ -65,29 +88,51 @@ func (a *App) Claim(o ClaimOpts) (err error) {
 	if _, err := a.Git.Run("fetch", remote, base); err != nil {
 		return err
 	}
-	if out, err := a.Git.Run("ls-remote", "--heads", remote, "refs/heads/"+c.branch); err != nil {
+	if sha, err := a.remoteRef("refs/heads/" + c.branch); err != nil {
 		return err
-	} else if out != "" {
+	} else if sha != "" {
 		return fmt.Errorf("branch %s already exists on %s", c.branch, remote)
 	}
-	if _, err := a.Git.Run("worktree", "add", "-b", c.branch, c.worktree, remote+"/"+base); err != nil {
+	baseSHA, err := a.Git.Run("rev-parse", remote+"/"+base)
+	if err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			c.undo()
-		}
-	}()
 
-	wt := git.Git{Dir: c.worktree}
-	if _, err := wt.Run("commit", "--allow-empty", "-m", fmt.Sprintf("chore: claim #%d", o.Number)); err != nil {
+	// The lock decides who holds the issue. Everything after it belongs to this attempt.
+	c.lock = lock{Ref: lockRef(o.Number), Attempt: newAttempt(), Branch: c.branch}
+	if c.lock.SHA, err = a.claimCommit(o.Number, baseSHA, c.branch, c.lock.Attempt); err != nil {
 		return err
 	}
-	if c.sha, err = wt.Run("rev-parse", "HEAD"); err != nil {
-		return err
+	res, now, err := a.pushRef(c.lock.Ref, c.lock.SHA, expect)
+	switch {
+	case res == unknown:
+		return exitf(ExitIncomplete, "claim outcome unknown: %v\nRun gh board check before claiming #%d again", err, o.Number)
+	case res == rejected && now == "":
+		return fmt.Errorf("could not create %s; nothing was claimed", c.lock.Ref)
+	case res == rejected:
+		other, err := a.describeLock(c.lock.Ref, now)
+		if err != nil {
+			return exitf(ExitHeld, "issue #%d was claimed first, by lock %s", o.Number, now)
+		}
+		return exitf(ExitHeld, "issue #%d was claimed first: %s", o.Number, other)
 	}
-	if _, err := wt.Run("push", "--force-with-lease=refs/heads/"+c.branch+":", "-u", remote, c.branch); err != nil {
-		return err
+	return c.finish(o, item, base)
+}
+
+// finish runs the steps after the lock. A definite failure undoes them and
+// releases the lock; an unknown outcome keeps everything for gh board check.
+func (c *claim) finish(o ClaimOpts, item *gh.Item, base string) error {
+	a := c.a
+	if _, err := a.Git.Run("worktree", "add", "-b", c.branch, c.worktree, c.lock.SHA); err != nil {
+		return c.fail(err)
+	}
+	branchRef := "refs/heads/" + c.branch
+	res, _, err := a.push(git.Git{Dir: c.worktree}, branchRef, c.lock.SHA, "", c.branch, "-u")
+	switch res {
+	case unknown:
+		return c.keep("push "+c.branch, err)
+	case rejected:
+		return c.fail(fmt.Errorf("%s was created on %s by someone else", c.branch, a.Cfg.Remote))
 	}
 	c.pushed = true
 
@@ -95,26 +140,78 @@ func (a *App) Claim(o ClaimOpts) (err error) {
 	if o.Refs {
 		keyword = "Refs"
 	}
-	if c.pr, err = a.GH.CreatePR(o.Title, c.branch, base, fmt.Sprintf("%s #%d", keyword, o.Number)); err != nil {
+	body := fmt.Sprintf("%s #%d\n\n%s", keyword, o.Number, attemptMarker(c.lock.Attempt))
+	if c.pr, err = c.gh.CreatePR(o.Title, c.branch, base, body); err != nil {
 		c.pr = nil
-		return fmt.Errorf("open draft PR: %w", err)
+		if gh.Definite(err) {
+			return c.fail(fmt.Errorf("open draft PR: %w", err))
+		}
+		prs, lookErr := c.gh.PRsForBranch(c.branch)
+		found := attemptPR(prs, c.lock.Attempt)
+		if lookErr != nil || found == nil {
+			return c.keep("open draft PR", err)
+		}
+		c.pr = found
 	}
-	if err := a.GH.SetFields(item.ID, map[string]string{"Status": a.Cfg.Statuses.Claimed}); err != nil {
-		return fmt.Errorf("set Status %s: %w", a.Cfg.Statuses.Claimed, err)
-	}
-	c.moved = true
-
-	if _, after, err := a.item(o.Number); err != nil {
-		return err
-	} else if older := olderThan(after.OpenPRs, c.pr.Number); len(older) > 0 {
-		c.moved = false
-		return exitf(ExitHeld, "older open linked PR found: %v. Backing out this claim", older)
+	if err := c.gh.SetFields(item.ID, map[string]string{"Status": a.Cfg.Statuses.Claimed}); err != nil {
+		if gh.Definite(err) {
+			return c.fail(fmt.Errorf("set Status %s: %w", a.Cfg.Statuses.Claimed, err))
+		}
+		a.printf("%s\n%s\n", c.worktree, c.pr.HTMLURL)
+		return exitf(ExitIncomplete, "claimed #%d, but setting Status %s had no clear outcome: %v\nCheck it, and if needed run: gh board status %d %q",
+			c.number, a.Cfg.Statuses.Claimed, err, c.number, a.Cfg.Statuses.Claimed)
 	}
 	a.printf("%s\n%s\n", c.worktree, c.pr.HTMLURL)
 	return nil
 }
 
-// eligible is the plain-claim rule shared by claim and next.
+// keep stops without undoing anything, because a write may have happened.
+func (c *claim) keep(step string, err error) error {
+	return exitf(ExitIncomplete, "claim incomplete: %s had no clear outcome: %v\n"+
+		"%s (attempt %s) still holds #%d, and nothing was undone. Run gh board check, then finish the claim by hand "+
+		"or, once nothing of this attempt remains, run: gh board release %d --sha %s",
+		step, err, c.lock.Ref, c.lock.Attempt, c.number, c.number, c.lock.SHA)
+}
+
+// fail undoes what this attempt made, newest first, and releases the lock last.
+// If any step cannot be undone, the lock stays so no one else claims over the leftovers.
+func (c *claim) fail(cause error) error {
+	a := c.a
+	var left []string
+	if c.pr != nil {
+		if err := c.gh.ClosePR(c.pr.Number); err != nil {
+			left = append(left, fmt.Sprintf("close PR #%d", c.pr.Number))
+		}
+	}
+	if c.pushed {
+		if res, _, _ := a.pushRef("refs/heads/"+c.branch, "", c.lock.SHA); res != pushed {
+			left = append(left, "delete remote branch "+c.branch)
+		}
+	}
+	if _, err := os.Stat(c.worktree); err == nil {
+		if _, err := a.Git.Run("worktree", "remove", "--force", c.worktree); err != nil {
+			left = append(left, "remove worktree "+c.worktree)
+		}
+	}
+	if _, err := a.Git.Run("rev-parse", "--verify", "--quiet", "refs/heads/"+c.branch); err == nil {
+		if _, err := a.Git.Run("branch", "-D", c.branch); err != nil {
+			left = append(left, "delete local branch "+c.branch)
+		}
+	}
+	if len(left) == 0 {
+		if res, _, _ := a.pushRef(c.lock.Ref, "", c.lock.SHA); res != pushed {
+			left = append(left, fmt.Sprintf("release the lock: gh board release %d --sha %s", c.number, c.lock.SHA))
+		}
+	} else {
+		left = append(left, fmt.Sprintf("then release the lock: gh board release %d --sha %s", c.number, c.lock.SHA))
+	}
+	if len(left) > 0 {
+		return fmt.Errorf("%w\nCleanup could not: %s", cause, strings.Join(left, "; "))
+	}
+	return cause
+}
+
+// eligible is the plain-claim rule shared by claim and next. The lock is checked separately.
 func (a *App) eligible(issue *gh.Issue, item *gh.Item) error {
 	switch {
 	case issue.State != "open":
@@ -127,42 +224,9 @@ func (a *App) eligible(issue *gh.Issue, item *gh.Item) error {
 	return nil
 }
 
-func olderThan(prs []int, n int) []int {
-	var older []int
-	for _, p := range prs {
-		if p < n {
-			older = append(older, p)
-		}
+func describePR(pr *gh.PR) string {
+	if pr == nil {
+		return ", no PR yet"
 	}
-	return older
-}
-
-// undo removes what this attempt made: its draft, its branch while the
-// remote still holds the claim commit, and its worktree.
-func (c *claim) undo() {
-	a := c.a
-	var left []string
-	if c.pr != nil {
-		if err := a.GH.ClosePR(c.pr.Number); err != nil {
-			left = append(left, fmt.Sprintf("close PR #%d", c.pr.Number))
-		}
-	}
-	if c.pushed {
-		lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", c.branch, c.sha)
-		if _, err := a.Git.Run("push", lease, a.Cfg.Remote, ":refs/heads/"+c.branch); err != nil {
-			left = append(left, "delete remote branch "+c.branch)
-		}
-	}
-	if _, err := a.Git.Run("worktree", "remove", "--force", c.worktree); err != nil {
-		left = append(left, "remove worktree "+c.worktree)
-	} else if _, err := a.Git.Run("branch", "-D", c.branch); err != nil {
-		left = append(left, "delete local branch "+c.branch)
-	}
-	if c.moved {
-		a.warnf("Issue #%d may still be %s. If no other claim holds it, run: gh board status %d %q\n",
-			c.number, a.Cfg.Statuses.Claimed, c.number, a.Cfg.Statuses.Ready)
-	}
-	if len(left) > 0 {
-		a.warnf("Cleanup could not: %s\n", strings.Join(left, "; "))
-	}
+	return fmt.Sprintf(", PR #%d %s", pr.Number, pr.State)
 }
