@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dan-online/gh-board/internal/gh"
@@ -17,12 +18,13 @@ func (a *App) Merge(n int, reviewed, method string) error {
 	if l == nil {
 		return fmt.Errorf("issue #%d has no claim lock; merge its PR with gh pr merge", n)
 	}
-	found, err := a.lockPR(l)
+	prs, err := a.GH.PRsForBranch(l.Branch)
 	if err != nil {
 		return err
 	}
+	found := attemptPR(prs, l.Attempt)
 	if found == nil {
-		return fmt.Errorf("issue #%d's claim has no PR", n)
+		return fmt.Errorf("issue #%d's claim has no PR: %s", n, whyNoPR(prs, l))
 	}
 	return a.mergePR(a.GH, found.Number, reviewed, method)
 }
@@ -97,6 +99,19 @@ func (a *App) mergePR(api mergeAPI, number int, reviewed, method string) error {
 		a.notef("could not delete branch %s; it moved or the push failed\n", branch)
 	}
 	return nil
+}
+
+// whyNoPR says why none of the lock branch's PRs is the claim's.
+func whyNoPR(prs []gh.PR, l *lock) string {
+	if len(prs) == 0 {
+		return "branch " + l.Branch + " has no PR"
+	}
+	var list []string
+	for _, p := range prs {
+		list = append(list, fmt.Sprintf("#%d %s", p.Number, p.State))
+	}
+	return fmt.Sprintf("branch %s has %s, and none carries attempt %s's marker or is its only open PR",
+		l.Branch, strings.Join(list, ", "), l.Attempt)
 }
 
 // openBelow returns the lowest open PR under pr in its stack, or 0.

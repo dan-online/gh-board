@@ -110,14 +110,23 @@ func (a *App) lockPR(l *lock) (*gh.PR, error) {
 	return attemptPR(prs, l.Attempt), nil
 }
 
-// attemptPR picks the PR whose body carries the attempt's marker. A PR on a
-// reused branch name from another attempt does not count.
+// attemptPR picks the PR whose body carries the attempt's marker. Agents
+// rewrite PR bodies, so without one it takes the branch's only open PR: claim
+// refuses a branch that already exists, so a PR on a reused branch name from
+// another attempt is closed and does not count.
 func attemptPR(prs []gh.PR, attempt string) *gh.PR {
 	marker := attemptMarker(attempt)
+	var open []*gh.PR
 	for i := range prs {
 		if strings.Contains(prs[i].Body, marker) {
 			return &prs[i]
 		}
+		if prs[i].State == "open" {
+			open = append(open, &prs[i])
+		}
+	}
+	if len(open) == 1 {
+		return open[0]
 	}
 	return nil
 }
