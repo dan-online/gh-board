@@ -12,6 +12,7 @@ type Ref struct {
 	Title  string `json:"title"`
 	State  string `json:"state"` // open or closed, as in REST
 	URL    string `json:"url"`
+	NodeID string `json:"-"`
 }
 
 // Relations are an issue's parent, sub-issues, blockers and the issues it blocks.
@@ -24,13 +25,14 @@ type Relations struct {
 
 type rawRef struct {
 	Ref
+	ID         string `json:"id"`
 	Repository struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"repository"`
 }
 
 func (r rawRef) ref() Ref {
-	r.Repo = r.Repository.NameWithOwner
+	r.Repo, r.NodeID = r.Repository.NameWithOwner, r.ID
 	r.State = strings.ToLower(r.State)
 	return r.Ref
 }
@@ -43,7 +45,7 @@ type rawRefs struct {
 	Nodes []rawRef `json:"nodes"`
 }
 
-const refFragment = `fragment ref on Issue { number title state url repository { nameWithOwner } }`
+const refFragment = `fragment ref on Issue { id number title state url repository { nameWithOwner } }`
 
 const relationsPage = 100
 
@@ -130,4 +132,61 @@ func (c *Client) allRefs(id, field string, first rawRefs) ([]Ref, error) {
 		}
 		page = next
 	}
+}
+
+const statusProjectsPage = 100
+
+var statusQuery = fmt.Sprintf(`query($ids: [ID!]!) { nodes(ids: $ids) { ... on Issue { id
+	projectItems(first: %d) { pageInfo { hasNextPage } nodes {
+		project { number owner { ... on Organization { login } ... on User { login } } }
+		status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+	} }
+} } }`, statusProjectsPage)
+
+// Statuses returns each issue's Status on the board's project, keyed by node ID,
+// in one GraphQL query per 100 issues. Issues not on the project are left out.
+func (c *Client) Statuses(nodeIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	for start := 0; start < len(nodeIDs); start += relationsPage {
+		ids := nodeIDs[start:min(start+relationsPage, len(nodeIDs))]
+		var resp struct {
+			Nodes []*struct {
+				ID           string `json:"id"`
+				ProjectItems struct {
+					PageInfo struct {
+						HasNextPage bool `json:"hasNextPage"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						Project struct {
+							Number int `json:"number"`
+							Owner  struct {
+								Login string `json:"login"`
+							} `json:"owner"`
+						} `json:"project"`
+						Status *struct {
+							Name string `json:"name"`
+						} `json:"status"`
+					} `json:"nodes"`
+				} `json:"projectItems"`
+			} `json:"nodes"`
+		}
+		if err := c.gql.Do(statusQuery, map[string]any{"ids": ids}, &resp); err != nil {
+			return nil, fmt.Errorf("read issue statuses: %w", err)
+		}
+		for i, n := range resp.Nodes {
+			if n == nil {
+				return nil, fmt.Errorf("read issue statuses: GitHub returned nothing for issue node %s", ids[i])
+			}
+			if n.ProjectItems.PageInfo.HasNextPage {
+				return nil, fmt.Errorf("read issue statuses: issue node %s is on more than %d projects", n.ID, statusProjectsPage)
+			}
+			for _, it := range n.ProjectItems.Nodes {
+				p := it.Project
+				if p.Number == c.cfg.Project.Number && strings.EqualFold(p.Owner.Login, c.cfg.Project.Owner) && it.Status != nil {
+					out[n.ID] = it.Status.Name
+				}
+			}
+		}
+	}
+	return out, nil
 }

@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -74,22 +75,27 @@ func (a *App) load(pick func(*gh.Item) bool) (*board, error) {
 		return nil, err
 	}
 	for _, it := range picked {
-		r := rels[it.Issue.NodeID]
-		n := &Node{Number: it.Issue.Number, Title: it.Issue.Title, State: it.Issue.State, URL: it.Issue.HTMLURL,
-			Fields: it.Values, Labels: orEmpty(it.Issue.LabelNames()), Parent: r.Parent, SubIssues: orEmpty(r.SubIssues),
-			BlockedBy: orEmpty(r.BlockedBy), Blocking: orEmpty(r.Blocking), OpenPRs: orEmpty(it.OpenPRs)}
-		ref := lockRef(n.Number)
-		if sha, ok := locks[ref]; ok {
-			l, err := a.describeLock(ref, sha)
-			if err != nil {
+		var l *lock
+		if sha, ok := locks[lockRef(it.Issue.Number)]; ok {
+			if l, err = a.describeLock(lockRef(it.Issue.Number), sha); err != nil {
 				return nil, err
 			}
-			n.Lock = &Lock{SHA: l.SHA, Branch: l.Branch, Host: l.Host, Since: l.Time}
 		}
+		n := newNode(it, rels[it.Issue.NodeID], l)
 		b.nodes = append(b.nodes, n)
 		b.byNum[n.Number] = n
 	}
 	return b, nil
+}
+
+func newNode(it *gh.Item, r gh.Relations, l *lock) *Node {
+	n := &Node{Number: it.Issue.Number, Title: it.Issue.Title, State: it.Issue.State, URL: it.Issue.HTMLURL,
+		Fields: it.Values, Labels: orEmpty(it.Issue.LabelNames()), Parent: r.Parent, SubIssues: orEmpty(r.SubIssues),
+		BlockedBy: orEmpty(r.BlockedBy), Blocking: orEmpty(r.Blocking), OpenPRs: orEmpty(it.OpenPRs)}
+	if l != nil {
+		n.Lock = &Lock{SHA: l.SHA, Branch: l.Branch, Host: l.Host, Since: l.Time}
+	}
+	return n
 }
 
 // local returns the loaded node a relation points at, or nil when it is
@@ -295,18 +301,36 @@ func (a *App) mermaid(b *board, nodes []*Node) {
 	}
 }
 
-// Show prints one issue's fields, relations, PRs and lock.
+// Show prints one issue's fields, relations, PRs and lock. It reads only that
+// issue's card and the Status of the open issues it relates to, not the whole board.
 func (a *App) Show(number int, asJSON bool) error {
-	b, err := a.load(func(it *gh.Item) bool { return it.Issue.Number == number })
+	issue, err := a.GH.Issue(number)
 	if err != nil {
 		return err
 	}
-	n := b.byNum[number]
-	if n == nil {
-		return fmt.Errorf("issue #%d is not on project %s #%d", number, a.Cfg.Project.Owner, a.Cfg.Project.Number)
+	it, err := a.GH.FindItem(issue)
+	if errors.Is(err, gh.ErrNotOnProject) {
+		// The project search can miss a card, such as an archived one or one it has not indexed yet.
+		it, err = a.scanItem(number, err)
 	}
+	if err != nil {
+		return err
+	}
+	rels, err := a.GH.Relations([]string{issue.NodeID})
+	if err != nil {
+		return err
+	}
+	l, err := a.readLock(number)
+	if err != nil {
+		return err
+	}
+	n := newNode(it, rels[issue.NodeID], l)
 	if asJSON {
 		return writeJSON(a.Out, n)
+	}
+	b, err := a.relatedStatuses(n)
+	if err != nil {
+		return err
 	}
 	a.printf("#%d %s (%s)\n%s\n", n.Number, n.Title, n.State, n.URL)
 	a.printf("Fields: %s\n", a.fieldText(n.Fields))
@@ -335,6 +359,45 @@ func (a *App) Show(number int, asJSON bool) error {
 		a.printf("Lock: %s at %s from %s, %s old\n", n.Lock.Branch, n.Lock.SHA, n.Lock.Host, time.Since(n.Lock.Since).Round(time.Second))
 	}
 	return nil
+}
+
+// scanItem finds an issue's card by reading the whole board, returning notFound when it is not there.
+func (a *App) scanItem(number int, notFound error) (*gh.Item, error) {
+	items, err := a.GH.Items()
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if items[i].Issue.Number == number {
+			return &items[i], nil
+		}
+	}
+	return nil, notFound
+}
+
+// relatedStatuses reads the board Status of the open issues in this repo that n relates to.
+func (a *App) relatedStatuses(n *Node) (*board, error) {
+	refs := append(append(append([]gh.Ref{}, n.SubIssues...), n.BlockedBy...), n.Blocking...)
+	if n.Parent != nil {
+		refs = append(refs, *n.Parent)
+	}
+	var ids []string
+	for _, r := range refs {
+		if r.State == "open" && strings.EqualFold(r.Repo, a.Cfg.Repo) {
+			ids = append(ids, r.NodeID)
+		}
+	}
+	statuses, err := a.GH.Statuses(ids)
+	if err != nil {
+		return nil, err
+	}
+	b := &board{status: map[int]string{}}
+	for _, r := range refs {
+		if s, ok := statuses[r.NodeID]; ok {
+			b.status[r.Number] = s
+		}
+	}
+	return b, nil
 }
 
 // refLine names a relation target with its title and, for an open board issue, its Status.

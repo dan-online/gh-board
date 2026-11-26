@@ -1,6 +1,7 @@
 package gh
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -170,6 +171,9 @@ func (c *Client) items(q string) ([]Item, error) {
 	return items, nil
 }
 
+// ErrNotOnProject is FindItem's error for an issue the project search does not find.
+var ErrNotOnProject = errors.New("not on the project")
+
 // FindItem returns the issue's project item. The project search narrows
 // the list; the URL match picks the item.
 func (c *Client) FindItem(issue *Issue) (*Item, error) {
@@ -182,7 +186,7 @@ func (c *Client) FindItem(issue *Issue) (*Item, error) {
 			return &items[i], nil
 		}
 	}
-	return nil, fmt.Errorf("issue #%d is not on project %s #%d", issue.Number, c.cfg.Project.Owner, c.cfg.Project.Number)
+	return nil, fmt.Errorf("issue #%d is not on project %s #%d: %w", issue.Number, c.cfg.Project.Owner, c.cfg.Project.Number, ErrNotOnProject)
 }
 
 // Items returns the project's items for issues in the board's repo, in board order.

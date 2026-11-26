@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/dan-online/gh-board/internal/config"
 )
 
 type roundTrip func(*http.Request) (*http.Response, error)
@@ -45,14 +46,14 @@ const emptyPage = `{"pageInfo":{"hasNextPage":false},"nodes":[]}`
 func TestRelationsReadsEveryPageOfALongList(t *testing.T) {
 	c, reqs := fakeGraphQL(t,
 		`{"data":{"nodes":[{"id":"I1","number":1,"parent":null,"subIssues":`+emptyPage+`,"blockedBy":`+emptyPage+`,
-			"blocking":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[{"number":2,"state":"OPEN","repository":{"nameWithOwner":"o/r"}}]}}]}}`,
+			"blocking":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[{"id":"I2","number":2,"state":"OPEN","repository":{"nameWithOwner":"o/r"}}]}}]}}`,
 		`{"data":{"node":{"blocking":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":3,"state":"CLOSED","repository":{"nameWithOwner":"o/r"}}]}}}}`)
 	rels, err := c.Relations([]string{"I1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := rels["I1"].Blocking
-	if len(got) != 2 || got[0].Number != 2 || got[1].Number != 3 || got[1].State != "closed" {
+	if len(got) != 2 || got[0].Number != 2 || got[0].NodeID != "I2" || got[1].Number != 3 || got[1].State != "closed" {
 		t.Fatalf("blocking %+v", got)
 	}
 	next := (*reqs)[1]
@@ -68,5 +69,24 @@ func TestRelationsRefusesAMissingIssue(t *testing.T) {
 	c, _ := fakeGraphQL(t, `{"data":{"nodes":[null]}}`)
 	if _, err := c.Relations([]string{"I1"}); err == nil || !strings.Contains(err.Error(), "I1") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStatusesReadsOnlyThisProjectsStatus(t *testing.T) {
+	c, _ := fakeGraphQL(t, `{"data":{"nodes":[
+		{"id":"I1","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[
+			{"project":{"number":2,"owner":{"login":"o"}},"status":{"name":"Elsewhere"}},
+			{"project":{"number":1,"owner":{"login":"other"}},"status":{"name":"OtherOwner"}},
+			{"project":{"number":1,"owner":{"login":"O"}},"status":{"name":"Ready"}}]}},
+		{"id":"I2","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[
+			{"project":{"number":1,"owner":{"login":"o"}},"status":null}]}}]}}`)
+	c.cfg = &config.Config{}
+	c.cfg.Project.Owner, c.cfg.Project.Number = "o", 1
+	got, err := c.Statuses([]string{"I1", "I2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got["I1"] != "Ready" {
+		t.Fatalf("got %v", got)
 	}
 }
