@@ -33,6 +33,9 @@ func skill(app *kong.Application, a *board.App) string {
 	w("## Stacking\n\n")
 	w("When `next` shows `stack on #M`, claim with `gh board claim N TITLE --on M` to start before #M merges. Your branch starts at #M's PR head and your PR joins #M's GitHub stack. ")
 	w("When #M's branch changes, run `gh stack rebase` in your worktree and push. Merge bottom-up with `gh board merge`; `gh pr merge` refuses stacked PRs. GitHub retargets your PR to the default branch once #M lands, and its closing keyword works as usual.\n\n")
+	w("## Reading the board\n\n")
+	w("Use `gh board graph` for the sub-issue tree with Status, fields and open blockers, and `gh board show N` for one issue's fields, relations, PRs and lock; both take `--json`. `gh board graph --mermaid` prints a chart for an issue or PR body. ")
+	w("Add a parent or blockers after filing with `gh board link N --parent P --blocked-by M`. Reach for `gh api` only for what these do not print.\n\n")
 	w("Every command reads GitHub first and keeps no local state. Run `gh board doctor` on a new machine before claiming.\n\n")
 
 	w("## Commands\n\n")

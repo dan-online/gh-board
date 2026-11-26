@@ -61,6 +61,8 @@ Each claim takes a lock, the ref `refs/claims/42`, pushed with a lease, so two m
 
 If 43 is blocked only by 42 and 42 already has a claim PR, `gh board next` shows `stack on #42`, and `gh board claim 43 "feat: ..." --on 42` builds on 42's branch and puts both PRs in a GitHub stack. Stacked PRs can't be merged with `gh pr merge`, so merge with `gh board merge 42 --sha REVIEWED_HEAD`. It works for any claimed PR, waits for the merge and deletes the branch once nothing targets it.
 
+`gh board graph` draws open issues as sub-issue trees, each line with its Status, fields, open blockers, PRs and claim lock; `gh board graph 42` keeps only what connects to 42, `--mermaid` prints a chart GitHub renders, and `--json` gives the same data for scripts. `gh board show 42` prints one issue the same way, and `gh board link 42 --parent 7 --blocked-by 40` adds relations after filing.
+
 `gh board skill` prints a guide for agents, with the repo's own fields and forms filled in. Point your agent instructions at it rather than copying the commands around.
 
 ## Development

@@ -35,6 +35,9 @@ type CLI struct {
 	Release ReleaseCmd `cmd:"" help:"Delete an issue's claim lock, only while it holds the given commit."`
 	Merge   MergeCmd   `cmd:"" help:"Merge an issue's claim PR, stacked or not, and delete its branch."`
 	Next    NextCmd    `cmd:"" help:"List claimable issues that nothing blocks, best first."`
+	Graph   GraphCmd   `cmd:"" help:"Draw the board's issues as a sub-issue tree with their blockers."`
+	Show    ShowCmd    `cmd:"" help:"Print one issue's fields, relations, PRs and claim lock."`
+	Link    LinkCmd    `cmd:"" help:"Add a parent or blockers to an existing issue."`
 	Doctor  DoctorCmd  `cmd:"" help:"Check this machine's token, access, remote and config."`
 	Skill   SkillCmd   `cmd:"" help:"Print the agent guide for this repo's board."`
 }
@@ -228,6 +231,66 @@ func (c *NextCmd) Run(e *env) error {
 		return err
 	}
 	return a.Next(c.Limit, c.JSON)
+}
+
+type GraphCmd struct {
+	Issue   int  `arg:"" optional:"" help:"Show only this issue and the issues connected to it."`
+	Closed  bool `help:"Include closed issues."`
+	JSON    bool `name:"json" xor:"format" help:"Print JSON: every issue with its fields, labels, relations, open PRs and lock."`
+	Mermaid bool `xor:"format" help:"Print a Mermaid flowchart, which GitHub renders in issues and PRs."`
+}
+
+func (c *GraphCmd) Help() string {
+	return "Covers open, unarchived issues on the board. Each issue whose parent is not shown starts a tree; its " +
+		"sub-issues follow in sub-issue order. A line shows Status and the config's fields, then open blockers, open " +
+		"PRs and the claim lock's branch. Blockers in other repos are named owner/repo#N. Mermaid draws parent edges " +
+		"solid and blocker edges dotted, between shown issues only."
+}
+
+func (c *GraphCmd) Run(e *env) error {
+	a, err := e.app()
+	if err != nil {
+		return err
+	}
+	return a.Graph(board.GraphOpts{Issue: c.Issue, Closed: c.Closed, JSON: c.JSON, Mermaid: c.Mermaid})
+}
+
+type ShowCmd struct {
+	Issue int  `arg:"" help:"Issue number."`
+	JSON  bool `name:"json" help:"Print JSON, the same shape as one gh board graph --json entry."`
+}
+
+func (c *ShowCmd) Help() string {
+	return "Works for closed and archived issues too, as long as they are on the board. Relation targets show their " +
+		"Status when they are open board issues. A lock stays until another claim takes it over, so a closed issue " +
+		"can still show one."
+}
+
+func (c *ShowCmd) Run(e *env) error {
+	a, err := e.app()
+	if err != nil {
+		return err
+	}
+	return a.Show(c.Issue, c.JSON)
+}
+
+type LinkCmd struct {
+	Issue     int      `arg:"" help:"Issue number."`
+	Parent    string   `placeholder:"ISSUE" help:"Parent issue, as a number or URL."`
+	BlockedBy []string `placeholder:"ISSUES" help:"Blocking issues, as comma-separated numbers or URLs."`
+}
+
+func (c *LinkCmd) Help() string {
+	return "Checks every target exists before writing, then adds each relation and prints it. A failure lists the " +
+		"links still missing; one with no clear outcome exits 4."
+}
+
+func (c *LinkCmd) Run(e *env) error {
+	a, err := e.app()
+	if err != nil {
+		return err
+	}
+	return a.Link(board.LinkOpts{Issue: c.Issue, Parent: c.Parent, BlockedBy: c.BlockedBy})
 }
 
 type DoctorCmd struct{}

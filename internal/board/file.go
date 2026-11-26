@@ -42,26 +42,9 @@ func (a *App) File(o FileOpts) error {
 			return fmt.Errorf("label not found: %s", l)
 		}
 	}
-	var parentPath string
-	if o.Parent != "" {
-		if parentPath, err = a.GH.IssuePath(o.Parent); err != nil {
-			return exitf(ExitUsage, "--parent: %v", err)
-		}
-		if _, err := a.GH.IssueAt(parentPath); err != nil {
-			return fmt.Errorf("parent issue not found: %s", o.Parent)
-		}
-	}
-	var blockers []*gh.Issue
-	for _, ref := range o.BlockedBy {
-		path, err := a.GH.IssuePath(ref)
-		if err != nil {
-			return exitf(ExitUsage, "--blocked-by: %v", err)
-		}
-		b, err := a.GH.IssueAt(path)
-		if err != nil {
-			return fmt.Errorf("blocking issue not found: %s", ref)
-		}
-		blockers = append(blockers, b)
+	parentPath, blockers, err := a.relationTargets(o.Parent, o.BlockedBy)
+	if err != nil {
+		return err
 	}
 	if _, err := a.GH.Fields(); err != nil {
 		return err
@@ -81,22 +64,10 @@ func (a *App) File(o FileOpts) error {
 		{"add to project", func() (err error) { itemID, err = a.GH.AddItem(issue); return }},
 		{"set " + describe(values), func() error { return a.GH.SetFields(itemID, values) }},
 	}
-	if parentPath != "" {
-		steps = append(steps, step{"add as sub-issue of " + o.Parent, func() error { return a.GH.AddSubIssue(parentPath, issue) }})
-	}
-	for i, b := range blockers {
-		steps = append(steps, step{"add blocked by " + o.BlockedBy[i], func() error { return a.GH.AddBlockedBy(issue, b) }})
-	}
+	steps = append(steps, a.relationSteps(issue, o.Parent, parentPath, o.BlockedBy, blockers)...)
 	for i, s := range steps {
 		if err := s.run(); err != nil {
-			var left []string
-			for _, r := range steps[i+1:] {
-				left = append(left, r.name)
-			}
-			rest := "nothing else"
-			if len(left) > 0 {
-				rest = strings.Join(left, "; ")
-			}
+			rest := remaining(steps[i+1:])
 			if !gh.Definite(err) {
 				return exitf(ExitIncomplete, "%s: %v\nIssue #%d exists. This write may have happened: check it before repeating it. Still missing after it: %s", s.name, err, issue.Number, rest)
 			}
@@ -140,6 +111,53 @@ func (a *App) fieldValues(pairs []string) (map[string]string, error) {
 type step struct {
 	name string
 	run  func() error
+}
+
+// remaining names the steps not yet run, for a failure message.
+func remaining(steps []step) string {
+	if len(steps) == 0 {
+		return "nothing else"
+	}
+	names := make([]string, len(steps))
+	for i, s := range steps {
+		names[i] = s.name
+	}
+	return strings.Join(names, "; ")
+}
+
+// relationTargets checks a parent and blockers, given as numbers or URLs, before anything is written.
+func (a *App) relationTargets(parent string, blockedBy []string) (parentPath string, blockers []*gh.Issue, err error) {
+	if parent != "" {
+		if parentPath, err = a.GH.IssuePath(parent); err != nil {
+			return "", nil, exitf(ExitUsage, "--parent: %v", err)
+		}
+		if _, err := a.GH.IssueAt(parentPath); err != nil {
+			return "", nil, fmt.Errorf("parent issue not found: %s", parent)
+		}
+	}
+	for _, ref := range blockedBy {
+		path, err := a.GH.IssuePath(ref)
+		if err != nil {
+			return "", nil, exitf(ExitUsage, "--blocked-by: %v", err)
+		}
+		b, err := a.GH.IssueAt(path)
+		if err != nil {
+			return "", nil, fmt.Errorf("blocking issue not found: %s", ref)
+		}
+		blockers = append(blockers, b)
+	}
+	return parentPath, blockers, nil
+}
+
+func (a *App) relationSteps(issue *gh.Issue, parent, parentPath string, blockedBy []string, blockers []*gh.Issue) []step {
+	var steps []step
+	if parentPath != "" {
+		steps = append(steps, step{"add as sub-issue of " + parent, func() error { return a.GH.AddSubIssue(parentPath, issue) }})
+	}
+	for i, b := range blockers {
+		steps = append(steps, step{"add blocked by " + blockedBy[i], func() error { return a.GH.AddBlockedBy(issue, b) }})
+	}
+	return steps
 }
 
 func describe(values map[string]string) string {
