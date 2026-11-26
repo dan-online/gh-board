@@ -7,7 +7,7 @@ It files issues with their project fields, checks an issue against its issue for
 ## Installation
 
 ```sh
-gh extension install dan-online/gh-board --pin v1.0.1
+gh extension install dan-online/gh-board --pin v1.0.2
 gh board doctor
 ```
 
