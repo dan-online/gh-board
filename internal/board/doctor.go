@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/dan-online/gh-board/internal/config"
+	"github.com/dan-online/gh-board/internal/gh"
 )
 
 // Doctor checks one thing per line and fails if any check fails.
@@ -65,14 +66,22 @@ func Doctor(dir, version string, out func(format string, a ...any)) error {
 		_, err := os.Stat(a.Cfg.FormPath(&f))
 		check("issue form "+f.File, err, "")
 	}
-	for _, name := range append([]string{"Status"}, a.Cfg.FieldNames()...) {
-		field, err := a.GH.Field(name)
-		if err == nil {
+	fields, err := a.GH.Fields()
+	if err != nil {
+		check("project fields", err, "")
+	} else {
+		for _, name := range append([]string{"Status"}, a.Cfg.FieldNames()...) {
+			i := slices.IndexFunc(fields, func(f gh.Field) bool { return f.Name == name })
+			if i < 0 {
+				check("project field "+name, fmt.Errorf("project field %s not found", name), "")
+				continue
+			}
+			var err error
 			want := a.Cfg.Fields[name].Options
 			if name == "Status" {
 				want = []string{a.Cfg.Statuses.New, a.Cfg.Statuses.Ready, a.Cfg.Statuses.Claimed}
 			}
-			options := field.OptionNames()
+			options := fields[i].OptionNames()
 			var absent []string
 			for _, o := range want {
 				if !slices.Contains(options, o) {
@@ -82,8 +91,8 @@ func Doctor(dir, version string, out func(format string, a ...any)) error {
 			if len(absent) > 0 {
 				err = fmt.Errorf("project field %s has no option %s", name, strings.Join(absent, ", "))
 			}
+			check("project field "+name, err, "")
 		}
-		check("project field "+name, err, "")
 	}
 	if failed > 0 {
 		return fmt.Errorf("doctor found %d problem(s)", failed)

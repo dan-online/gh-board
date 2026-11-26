@@ -75,9 +75,9 @@ func TestRelationsRefusesAMissingIssue(t *testing.T) {
 func TestStatusesReadsOnlyThisProjectsStatus(t *testing.T) {
 	c, _ := fakeGraphQL(t, `{"data":{"nodes":[
 		{"id":"I1","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[
+			{"project":{"number":1,"owner":{"login":"O"}},"status":{"name":"Ready"}},
 			{"project":{"number":2,"owner":{"login":"o"}},"status":{"name":"Elsewhere"}},
-			{"project":{"number":1,"owner":{"login":"other"}},"status":{"name":"OtherOwner"}},
-			{"project":{"number":1,"owner":{"login":"O"}},"status":{"name":"Ready"}}]}},
+			{"project":{"number":1,"owner":{"login":"other"}},"status":{"name":"OtherOwner"}}]}},
 		{"id":"I2","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[
 			{"project":{"number":1,"owner":{"login":"o"}},"status":null}]}}]}}`)
 	c.cfg = &config.Config{}

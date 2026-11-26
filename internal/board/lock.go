@@ -68,6 +68,10 @@ func (a *App) describeLock(ref, sha string) (*lock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read lock %s at %s: %w", ref, sha, err)
 	}
+	return parseLock(ref, sha, c)
+}
+
+func parseLock(ref, sha string, c *gh.Commit) (*lock, error) {
 	l := &lock{Ref: ref, SHA: sha, Time: c.Committer.Date}
 	cmd := exec.Command("git", "interpret-trailers", "--parse")
 	cmd.Stdin = strings.NewReader(c.Message)

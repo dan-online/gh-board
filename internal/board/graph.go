@@ -2,7 +2,6 @@ package board
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -44,29 +43,45 @@ func orEmpty[T any](s []T) []T {
 
 // board is the project's issues in this repo, with the relations and locks of some of them.
 type board struct {
-	status map[int]string // every board issue's Status, for naming relation targets
-	nodes  []*Node        // the loaded issues, in board order
-	byNum  map[int]*Node
+	nodes []*Node // the loaded issues, in board order
+	byNum map[int]*Node
 }
 
-// load reads the board and the relations and locks of the items pick keeps.
-func (a *App) load(pick func(*gh.Item) bool) (*board, error) {
+// load reads the board and the relations and locks of the issues graph will show.
+func (a *App) load(o GraphOpts) (*board, error) {
 	items, err := a.GH.Items()
 	if err != nil {
 		return nil, err
 	}
-	b := &board{status: map[int]string{}, byNum: map[int]*Node{}}
 	var picked []*gh.Item
 	var ids []string
+	byNum := map[int]string{}
 	for i := range items {
 		it := &items[i]
-		b.status[it.Issue.Number] = it.Values["Status"]
-		if pick(it) {
-			picked = append(picked, it)
+		if it.Archived || (!o.Closed && it.Issue.State != "open") {
+			continue
+		}
+		picked = append(picked, it)
+		if o.Issue == 0 {
 			ids = append(ids, it.Issue.NodeID)
+		} else {
+			byNum[it.Issue.Number] = it.Issue.NodeID
 		}
 	}
-	rels, err := a.GH.Relations(ids)
+	var rels map[string]gh.Relations
+	if o.Issue == 0 {
+		rels, err = a.GH.Relations(ids)
+	} else {
+		id, ok := byNum[o.Issue]
+		if !ok {
+			hint := ""
+			if !o.Closed {
+				hint = "; pass --closed to include closed issues"
+			}
+			return nil, fmt.Errorf("issue #%d is not an open, unarchived issue on the board%s", o.Issue, hint)
+		}
+		rels, err = a.component(byNum, id)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -74,14 +89,19 @@ func (a *App) load(pick func(*gh.Item) bool) (*board, error) {
 	if err != nil {
 		return nil, err
 	}
+	b := &board{byNum: map[int]*Node{}}
 	for _, it := range picked {
+		r, ok := rels[it.Issue.NodeID]
+		if o.Issue != 0 && !ok {
+			continue
+		}
 		var l *lock
 		if sha, ok := locks[lockRef(it.Issue.Number)]; ok {
 			if l, err = a.describeLock(lockRef(it.Issue.Number), sha); err != nil {
 				return nil, err
 			}
 		}
-		n := newNode(it, rels[it.Issue.NodeID], l)
+		n := newNode(it, r, l)
 		b.nodes = append(b.nodes, n)
 		b.byNum[n.Number] = n
 	}
@@ -107,35 +127,37 @@ func (a *App) local(b *board, r gh.Ref) *Node {
 	return b.byNum[r.Number]
 }
 
-// component is the loaded nodes connected to n by any relation, in board order.
-func (a *App) component(b *board, n *Node) []*Node {
-	seen := map[int]bool{n.Number: true}
-	queue := []*Node{n}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
+// component reads one frontier at a time, using rels to mark discovered issues.
+func (a *App) component(byNum map[int]string, root string) (map[string]gh.Relations, error) {
+	rels := map[string]gh.Relations{root: {}}
+	for frontier := []string{root}; len(frontier) > 0; {
+		batch, err := a.GH.Relations(frontier)
+		if err != nil {
+			return nil, err
+		}
+		var next []string
 		visit := func(r gh.Ref) {
-			if m := a.local(b, r); m != nil && !seen[m.Number] {
-				seen[m.Number] = true
-				queue = append(queue, m)
+			id, picked := byNum[r.Number]
+			if _, seen := rels[id]; picked && !seen && strings.EqualFold(r.Repo, a.Cfg.Repo) {
+				rels[id] = gh.Relations{}
+				next = append(next, id)
 			}
 		}
-		for _, refs := range [][]gh.Ref{cur.SubIssues, cur.BlockedBy, cur.Blocking} {
-			for _, r := range refs {
-				visit(r)
+		for _, id := range frontier {
+			r := batch[id]
+			rels[id] = r
+			for _, refs := range [][]gh.Ref{r.SubIssues, r.BlockedBy, r.Blocking} {
+				for _, ref := range refs {
+					visit(ref)
+				}
+			}
+			if r.Parent != nil {
+				visit(*r.Parent)
 			}
 		}
-		if cur.Parent != nil {
-			visit(*cur.Parent)
-		}
+		frontier = next
 	}
-	var out []*Node
-	for _, m := range b.nodes {
-		if seen[m.Number] {
-			out = append(out, m)
-		}
-	}
-	return out
+	return rels, nil
 }
 
 type GraphOpts struct {
@@ -147,29 +169,17 @@ type GraphOpts struct {
 
 // Graph prints the board's issues as a parent tree with their blockers.
 func (a *App) Graph(o GraphOpts) error {
-	b, err := a.load(func(it *gh.Item) bool { return !it.Archived && (o.Closed || it.Issue.State == "open") })
+	b, err := a.load(o)
 	if err != nil {
 		return err
 	}
-	nodes := b.nodes
-	if o.Issue != 0 {
-		n := b.byNum[o.Issue]
-		if n == nil {
-			hint := ""
-			if !o.Closed {
-				hint = "; pass --closed to include closed issues"
-			}
-			return fmt.Errorf("issue #%d is not an open, unarchived issue on the board%s", o.Issue, hint)
-		}
-		nodes = a.component(b, n)
-	}
 	switch {
 	case o.JSON:
-		return writeJSON(a.Out, orEmpty(nodes))
+		return writeJSON(a.Out, orEmpty(b.nodes))
 	case o.Mermaid:
-		a.mermaid(b, nodes)
+		a.mermaid(b, b.nodes)
 	default:
-		a.tree(b, nodes)
+		a.tree(b, b.nodes)
 	}
 	return nil
 }
@@ -304,15 +314,7 @@ func (a *App) mermaid(b *board, nodes []*Node) {
 // Show prints one issue's fields, relations, PRs and lock. It reads only that
 // issue's card and the Status of the open issues it relates to, not the whole board.
 func (a *App) Show(number int, asJSON bool) error {
-	issue, err := a.GH.Issue(number)
-	if err != nil {
-		return err
-	}
-	it, err := a.GH.FindItem(issue)
-	if errors.Is(err, gh.ErrNotOnProject) {
-		// The project search can miss a card, such as an archived one or one it has not indexed yet.
-		it, err = a.scanItem(number, err)
-	}
+	issue, it, err := a.item(number)
 	if err != nil {
 		return err
 	}
@@ -328,7 +330,7 @@ func (a *App) Show(number int, asJSON bool) error {
 	if asJSON {
 		return writeJSON(a.Out, n)
 	}
-	b, err := a.relatedStatuses(n)
+	statuses, err := a.relatedStatuses(n)
 	if err != nil {
 		return err
 	}
@@ -338,7 +340,7 @@ func (a *App) Show(number int, asJSON bool) error {
 		a.printf("Labels: %s\n", strings.Join(n.Labels, ", "))
 	}
 	if n.Parent != nil {
-		a.printf("Parent: %s\n", a.refLine(b, *n.Parent))
+		a.printf("Parent: %s\n", a.refLine(statuses, *n.Parent))
 	}
 	for _, l := range []struct {
 		name string
@@ -349,7 +351,7 @@ func (a *App) Show(number int, asJSON bool) error {
 		}
 		a.printf("%s:\n", l.name)
 		for _, r := range l.refs {
-			a.printf("  %s\n", a.refLine(b, r))
+			a.printf("  %s\n", a.refLine(statuses, r))
 		}
 	}
 	for _, pr := range n.OpenPRs {
@@ -361,52 +363,40 @@ func (a *App) Show(number int, asJSON bool) error {
 	return nil
 }
 
-// scanItem finds an issue's card by reading the whole board, returning notFound when it is not there.
-func (a *App) scanItem(number int, notFound error) (*gh.Item, error) {
-	items, err := a.GH.Items()
-	if err != nil {
-		return nil, err
-	}
-	for i := range items {
-		if items[i].Issue.Number == number {
-			return &items[i], nil
-		}
-	}
-	return nil, notFound
-}
-
 // relatedStatuses reads the board Status of the open issues in this repo that n relates to.
-func (a *App) relatedStatuses(n *Node) (*board, error) {
+func (a *App) relatedStatuses(n *Node) (map[int]string, error) {
 	refs := append(append(append([]gh.Ref{}, n.SubIssues...), n.BlockedBy...), n.Blocking...)
 	if n.Parent != nil {
 		refs = append(refs, *n.Parent)
 	}
 	var ids []string
+	numbers := map[string]int{}
 	for _, r := range refs {
-		if r.State == "open" && strings.EqualFold(r.Repo, a.Cfg.Repo) {
+		if _, seen := numbers[r.NodeID]; !seen && r.State == "open" && strings.EqualFold(r.Repo, a.Cfg.Repo) {
 			ids = append(ids, r.NodeID)
+			numbers[r.NodeID] = r.Number
 		}
 	}
 	statuses, err := a.GH.Statuses(ids)
 	if err != nil {
 		return nil, err
 	}
-	b := &board{status: map[int]string{}}
-	for _, r := range refs {
-		if s, ok := statuses[r.NodeID]; ok {
-			b.status[r.Number] = s
+	out := map[int]string{}
+	for id, number := range numbers {
+		if s, ok := statuses[id]; ok {
+			out[number] = s
 		}
 	}
-	return b, nil
+	return out, nil
 }
 
 // refLine names a relation target with its title and, for an open board issue, its Status.
-func (a *App) refLine(b *board, r gh.Ref) string {
+func (a *App) refLine(statuses map[int]string, r gh.Ref) string {
 	s := a.refName(r) + " " + r.Title
 	if r.State == "closed" {
 		return s + " (closed)"
 	}
-	if status := b.status[r.Number]; status != "" && strings.EqualFold(r.Repo, a.Cfg.Repo) {
+	if status := statuses[r.Number]; status != "" && strings.EqualFold(r.Repo, a.Cfg.Repo) {
 		return s + " [" + status + "]"
 	}
 	return s

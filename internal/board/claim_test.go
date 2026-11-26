@@ -3,6 +3,7 @@ package board
 import (
 	"bytes"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,6 +184,27 @@ func TestClaimKeepsTheLockWhenCleanupFails(t *testing.T) {
 	}
 }
 
+func TestClaimKeepsUntrackedWorkAndLockDuringRollback(t *testing.T) {
+	api := &fakeAPI{createPR: &gh.PR{Number: 12}, setErr: &api.HTTPError{StatusCode: 403}}
+	c, remote := setup(t, api)
+	file := filepath.Join(c.worktree, "untracked.txt")
+	api.onSet = func() {
+		if err := os.WriteFile(file, []byte("unfinished work"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main", nil)
+	if err == nil || !strings.Contains(err.Error(), "remove worktree") {
+		t.Fatalf("got %v", err)
+	}
+	if contents, err := os.ReadFile(file); err != nil || string(contents) != "unfinished work" {
+		t.Fatalf("untracked work lost: %q, %v", contents, err)
+	}
+	if len(api.closed) != 0 || remoteHas(t, remote, c.lock.Ref) != c.lock.SHA {
+		t.Fatal("PR closed or lock released with untracked work left behind")
+	}
+}
+
 func TestClaimLeavesAnotherAttemptsBranchAlone(t *testing.T) {
 	c, remote := setup(t, &fakeAPI{createPR: &gh.PR{Number: 12}})
 	main := c.a.Git.Dir
@@ -212,8 +234,11 @@ func TestClaimKeepsPRAndLockWhenItsBranchMovedDuringRollback(t *testing.T) {
 		run(t, wt, "push", "-q", "origin", "HEAD:refs/heads/"+c.branch)
 	}
 	err := c.finish(ClaimOpts{Number: 7, Title: "feat: x"}, &gh.Item{}, "main", nil)
-	if err == nil || !strings.Contains(err.Error(), "delete remote branch") {
+	if err == nil || !strings.Contains(err.Error(), "delete remote branch") || !strings.Contains(err.Error(), "delete local branch") {
 		t.Fatalf("got %v", err)
+	}
+	if got := run(t, c.a.Git.Dir, "rev-parse", c.branch); got != remoteHas(t, remote, "refs/heads/"+c.branch) {
+		t.Fatalf("moved local branch changed: %s", got)
 	}
 	if len(api.closed) != 0 {
 		t.Fatal("PR closed while the attempt's branch could not be removed; the lock would look takeable")
@@ -259,6 +284,19 @@ func parentPR() *parent {
 	p := &parent{issue: 6, pr: &gh.PR{Number: 11}}
 	p.pr.Head.Ref = "6-base"
 	return p
+}
+
+func TestStackParentRejectsForeignBlockerWithSameNumber(t *testing.T) {
+	c, _ := setup(t, nil)
+	serveBoardAPI(t, c.a, func(r *http.Request) (int, string) {
+		t.Fatalf("read a local claim for a foreign issue: %s", r.URL)
+		return 0, ""
+	})
+	_, err := c.a.stackParentOf(8, 7, []gh.Issue{{Number: 7, State: "open", HTMLURL: "https://github.com/other/r/issues/7"}})
+	var no notStackable
+	if !errors.As(err, &no) {
+		t.Fatalf("expected a non-stackable blocker, got %v", err)
+	}
 }
 
 func TestStackedClaimRegistersOnTopOfItsParent(t *testing.T) {

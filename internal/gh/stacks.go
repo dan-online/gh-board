@@ -61,9 +61,11 @@ func (c *Client) PR(number int) (*PR, error) {
 	return &pr, err
 }
 
-// OpenPRsOnBase lists open PRs whose base is branch.
-func (c *Client) OpenPRsOnBase(branch string) ([]PR, error) {
-	return getAll[PR](c, query("repos/"+c.cfg.Repo+"/pulls", url.Values{"base": {branch}, "state": {"open"}, "per_page": {"100"}}))
+// HasOpenPRsOnBase reports whether any open PR targets branch.
+func (c *Client) HasOpenPRsOnBase(branch string) (bool, error) {
+	var prs []PR
+	err := c.get(query("repos/"+c.cfg.Repo+"/pulls", url.Values{"base": {branch}, "state": {"open"}, "per_page": {"1"}}), &prs)
+	return len(prs) != 0, err
 }
 
 // AsyncMerge is the state of a merge submitted through the async merge API.

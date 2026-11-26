@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 
 	"github.com/dan-online/gh-board/internal/gh"
@@ -23,15 +24,9 @@ func (a *App) Next(limit int, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	list, err := a.unlocked(a.queue(items))
+	list, err := a.claimable(a.queue(items), limit)
 	if err != nil {
 		return err
-	}
-	if list, err = a.stackHints(list); err != nil {
-		return err
-	}
-	if limit > 0 && len(list) > limit {
-		list = list[:limit]
 	}
 	if asJSON {
 		enc := json.NewEncoder(a.Out)
@@ -53,7 +48,7 @@ func (a *App) Next(limit int, asJSON bool) error {
 
 // queue filters and ranks items. Ranking is by the queue field's option
 // order, unset last, then board position, which the stable sort keeps.
-// Issues with open blockers stay in, marked, for stackHints to settle.
+// Issues with open blockers stay in, marked, for stackHint to settle.
 func (a *App) queue(items []gh.Item) []Candidate {
 	var list []Candidate
 	for i := range items {
@@ -77,12 +72,12 @@ func (a *App) queue(items []gh.Item) []Candidate {
 	return list
 }
 
-// unlocked drops candidates whose lock is still live: no PR yet, or an open one.
-func (a *App) unlocked(list []Candidate) ([]Candidate, error) {
+func (a *App) claimable(list []Candidate, limit int) ([]Candidate, error) {
 	locks, err := a.remoteRefs("refs/claims/*")
-	if err != nil || len(locks) == 0 {
-		return list, err
+	if err != nil {
+		return nil, err
 	}
+	parents := map[int]bool{}
 	var out []Candidate
 	for _, c := range list {
 		ref := lockRef(c.Number)
@@ -97,37 +92,54 @@ func (a *App) unlocked(list []Candidate) ([]Candidate, error) {
 				continue
 			}
 		}
+		if c.blocked {
+			c.StackOn, err = a.stackHint(c.Number, parents)
+			if err != nil {
+				return nil, err
+			}
+			if c.StackOn == 0 {
+				continue
+			}
+		}
 		out = append(out, c)
+		if limit > 0 && len(out) == limit {
+			break
+		}
 	}
 	return out, nil
 }
 
-// stackHints keeps a blocked candidate only when it can stack on its one open
-// blocker's claim, and records which issue that is.
-func (a *App) stackHints(list []Candidate) ([]Candidate, error) {
-	var out []Candidate
-	for _, c := range list {
-		if !c.blocked {
-			out = append(out, c)
-			continue
-		}
-		blockers, err := a.GH.BlockedBy(c.Number)
-		if err != nil {
-			return nil, err
-		}
-		var open []int
-		for _, b := range blockers {
-			if b.State == "open" {
-				open = append(open, b.Number)
-			}
-		}
-		if len(open) != 1 {
-			continue
-		}
-		if _, err := a.stackParentOf(c.Number, open[0], blockers); err == nil {
-			c.StackOn = open[0]
-			out = append(out, c)
-		}
+// stackHint returns the one open blocker's issue number if its claim can carry n.
+func (a *App) stackHint(n int, parents map[int]bool) (int, error) {
+	blockers, err := a.GH.BlockedBy(n)
+	if err != nil {
+		return 0, err
 	}
-	return out, nil
+	m := 0
+	for _, b := range blockers {
+		if b.State != "open" {
+			continue
+		}
+		if m != 0 || !a.isRepoIssue(b) {
+			return 0, nil
+		}
+		m = b.Number
+	}
+	if m == 0 {
+		return 0, nil
+	}
+	ok, cached := parents[m]
+	if !cached {
+		_, err := a.readStackParent(m)
+		var no notStackable
+		if err != nil && !errors.As(err, &no) {
+			return 0, err
+		}
+		ok = err == nil
+		parents[m] = ok
+	}
+	if !ok {
+		return 0, nil
+	}
+	return m, nil
 }

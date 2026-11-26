@@ -15,12 +15,14 @@ type env struct {
 	model   *kong.Application
 }
 
-func (e *env) app() (*board.App, error) {
+func (e *env) app() (*board.App, error) { return e.open(board.Open) }
+
+func (e *env) open(open func(string, string) (*board.App, error)) (*board.App, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	return board.Open(dir, e.version)
+	return open(dir, e.version)
 }
 
 type CLI struct {
@@ -187,7 +189,7 @@ func (c *ReleaseCmd) Help() string {
 }
 
 func (c *ReleaseCmd) Run(e *env) error {
-	a, err := e.app()
+	a, err := e.open(board.OpenLocal)
 	if err != nil {
 		return err
 	}
@@ -317,7 +319,7 @@ func (c *SkillCmd) Help() string {
 
 func (c *SkillCmd) Run(e *env) error {
 	var a *board.App
-	if app, err := e.app(); err == nil {
+	if app, err := e.open(board.OpenLocal); err == nil {
 		a = app
 	}
 	fmt.Print(skill(e.model, a))

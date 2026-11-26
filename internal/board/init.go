@@ -87,18 +87,9 @@ func Init(dir string, o InitOpts, ask Asker, out io.Writer) error {
 		return err
 	}
 	r := &initRun{o: o, ask: ask, out: out, gh: client, cfg: cfg}
-	if err := r.build(); err != nil {
+	data, err := r.build()
+	if err != nil {
 		return err
-	}
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(cfg); err != nil {
-		return err
-	}
-	data := buf.Bytes()
-	if _, err := config.Parse(data); err != nil {
-		return fmt.Errorf("generated config is invalid: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -111,42 +102,58 @@ func Init(dir string, o InitOpts, ask Asker, out io.Writer) error {
 	return nil
 }
 
-func (r *initRun) build() error {
+func (r *initRun) build() ([]byte, error) {
 	info, err := r.gh.RepoInfo()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Settle every choice that needs no project before creating one.
 	if r.cfg.Types = r.o.Types; len(r.cfg.Types) == 0 {
 		r.cfg.Types = info.IssueTypes
 	}
 	if len(r.cfg.Types) == 0 {
-		return errors.New("the repo has no enabled issue types; pass --type for each type issues may use")
+		return nil, errors.New("the repo has no enabled issue types; pass --type for each type issues may use")
 	}
 	if err := r.pickForms(); err != nil {
-		return err
+		return nil, err
 	}
 	created, err := r.pickProject(info)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	projectID, fields, err := r.gh.SelectFields()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var addStatuses func() error
 	if created {
 		if err := r.setUpNewProject(projectID, fields); err != nil {
-			return err
+			return nil, err
 		}
 	} else {
-		if err := r.pickStatuses(fields); err != nil {
-			return err
+		if addStatuses, err = r.pickStatuses(fields); err != nil {
+			return nil, err
 		}
 		if err := r.pickFields(fields); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(r.cfg); err != nil {
+		return nil, err
+	}
+	data := buf.Bytes()
+	if _, err := config.Parse(data); err != nil {
+		return nil, fmt.Errorf("generated config is invalid: %w", err)
+	}
+	if addStatuses != nil {
+		if err := addStatuses(); err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
 }
 
 // consent asks for a write: a person confirms it, an agent passes --create.
@@ -256,10 +263,10 @@ func optionNames(f *gh.SelectField) []string {
 	return names
 }
 
-func (r *initRun) pickStatuses(fields []gh.SelectField) error {
+func (r *initRun) pickStatuses(fields []gh.SelectField) (func() error, error) {
 	status := findField(fields, "Status")
 	if status == nil {
-		return fmt.Errorf("project %s #%d has no Status field", r.cfg.Project.Owner, r.cfg.Project.Number)
+		return nil, fmt.Errorf("project %s #%d has no Status field", r.cfg.Project.Owner, r.cfg.Project.Number)
 	}
 	options := optionNames(status)
 	roles := []struct {
@@ -283,31 +290,33 @@ func (r *initRun) pickStatuses(fields []gh.SelectField) error {
 			}
 			i, err := r.ask.Select("Status for "+role.role+"?", def, options)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			*role.set = options[i]
 		case slices.Contains(options, role.template):
 			*role.set = role.template
 		default:
-			return exitf(ExitUsage, "pass %s with the Status option for %s; options: %s", role.flag, role.role, strings.Join(options, ", "))
+			return nil, exitf(ExitUsage, "pass %s with the Status option for %s; options: %s", role.flag, role.role, strings.Join(options, ", "))
 		}
 		if !slices.Contains(options, *role.set) && !slices.Contains(missing, *role.set) {
 			missing = append(missing, *role.set)
 		}
 	}
 	if len(missing) == 0 {
-		return nil
+		return nil, nil
 	}
 	plan := fmt.Sprintf("add %s to the Status field of project %s #%d, keeping its options and their values",
 		strings.Join(missing, ", "), r.cfg.Project.Owner, r.cfg.Project.Number)
-	if err := r.consent(plan); err != nil {
-		return err
-	}
 	opts := slices.Clone(status.Options)
 	for _, m := range missing {
 		opts = append(opts, gh.SelectOption{Name: m, Color: "GRAY"})
 	}
-	return r.gh.SetOptions(status.ID, opts)
+	return func() error {
+		if err := r.consent(plan); err != nil {
+			return err
+		}
+		return r.gh.SetOptions(status.ID, opts)
+	}, nil
 }
 
 func (r *initRun) pickFields(fields []gh.SelectField) error {

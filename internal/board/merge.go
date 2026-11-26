@@ -33,7 +33,7 @@ type mergeAPI interface {
 	StackFor(pr int) (*gh.Stack, error)
 	MergeAsync(pr int, method, headSHA string) (*gh.AsyncMerge, error)
 	MergeAsyncResult(pr int, uuid string) (*gh.AsyncMerge, error)
-	OpenPRsOnBase(branch string) ([]gh.PR, error)
+	HasOpenPRsOnBase(branch string) (bool, error)
 }
 
 func (a *App) mergePR(api mergeAPI, number int, reviewed, method string) error {
@@ -89,7 +89,7 @@ func (a *App) mergePR(api mergeAPI, number int, reviewed, method string) error {
 	a.printf("merged PR #%d as %s\n", pr.Number, m.Details.SHA)
 
 	branch := pr.Head.Ref
-	if on, err := api.OpenPRsOnBase(branch); err != nil || len(on) > 0 {
+	if on, err := api.HasOpenPRsOnBase(branch); err != nil || on {
 		a.notef("kept branch %s: open PRs still build on it or the check failed\n", branch)
 		return nil
 	}

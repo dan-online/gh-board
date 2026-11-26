@@ -1,7 +1,9 @@
 package board
 
 import (
+	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -75,7 +77,7 @@ func TestInitAsksForStatusesFieldsAndForms(t *testing.T) {
 		{Name: "Effort", Options: option("1", "2")},
 		{Name: "Priority", Options: option("High", "Low")},
 	}
-	if err := r.pickStatuses(fields); err != nil {
+	if _, err := r.pickStatuses(fields); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.pickFields(fields); err != nil {
@@ -122,8 +124,80 @@ func TestInitRefusesFieldFlagsBeforeCreatingAProject(t *testing.T) {
 
 func TestInitWithoutTerminalNamesTheFlag(t *testing.T) {
 	r := &initRun{out: io.Discard, cfg: &config.Config{}}
-	err := r.pickStatuses([]gh.SelectField{{Name: "Status", Options: option("Todo", "Ready", "In progress")}})
+	_, err := r.pickStatuses([]gh.SelectField{{Name: "Status", Options: option("Todo", "Ready", "In progress")}})
 	if err == nil || err.Error() != "pass --new with the Status option for new issues; options: Todo, Ready, In progress" {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestInitValidatesFlagsBeforeAddingStatus(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts InitOpts
+		want string
+	}{
+		{"required", InitOpts{Required: []string{"Typo"}}, "--required Typo"},
+		{"sort", InitOpts{Sort: "Typo"}, `queue.sort "Typo"`},
+		{"default", InitOpts{Defaults: []string{"Size=Typo"}}, `fields.Size.default "Typo"`},
+		{"valid", InitOpts{Required: []string{"Size"}}, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writes := 0
+			stubGitHub(t, func(r *http.Request) (int, string) {
+				switch r.Method + " " + r.URL.Path {
+				case "GET /users/o":
+					return 200, `{"type":"User"}`
+				case "POST /graphql":
+					var req struct {
+						Query     string
+						Variables struct {
+							Field   string
+							Options []gh.SelectOption
+						}
+					}
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatal(err)
+					}
+					switch {
+					case strings.Contains(req.Query, "repository(owner:"):
+						return 200, `{"data":{"repository":{"projectsV2":{"nodes":[{"owner":{"login":"o"},"number":1}]},"issueTypes":{"nodes":[{"name":"Task","isEnabled":true}]}}}}`
+					case strings.Contains(req.Query, "projectV2(number:"):
+						return 200, `{"data":{"owner":{"projectV2":{"id":"p","fields":{"nodes":[{"id":"status","name":"Status","options":[{"id":"ready","name":"Ready"},{"id":"started","name":"In progress"}]},{"id":"size","name":"Size","options":[{"name":"S"}]}]}}}}}`
+					case tt.want == "" && strings.Contains(req.Query, "updateProjectV2Field("):
+						writes++
+						opts := req.Variables.Options
+						if req.Variables.Field != "status" || len(opts) != 3 || opts[0].ID != "ready" || opts[1].ID != "started" || opts[2].Name != "Triage" {
+							t.Fatalf("unexpected field update: %+v", req.Variables)
+						}
+						return 200, `{"data":{"updateProjectV2Field":{"clientMutationId":null}}}`
+					default:
+						t.Fatalf("unexpected GraphQL request: %s", req.Query)
+					}
+				default:
+					t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+				}
+				return 0, ""
+			})
+			g := validationCheckout(t)
+			opts := tt.opts
+			opts.Remote, opts.Create, opts.New = "origin", true, "Triage"
+			err := Init(g.Dir, opts, nil, io.Discard)
+			if tt.want == "" {
+				if err != nil || writes != 1 {
+					t.Fatalf("init returned %v and wrote %d Status updates, want one successful write", err, writes)
+				}
+				cfg, err := config.Load(g.Dir)
+				if err != nil || cfg.Statuses.New != "Triage" || !cfg.Fields["Size"].Required {
+					t.Fatalf("unexpected config: %+v, %v", cfg, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("got %v, want error containing %q", err, tt.want)
+			}
+			if _, err := os.Stat(filepath.Join(g.Dir, config.Path)); !os.IsNotExist(err) {
+				t.Fatalf("unexpected stat result for config: %v", err)
+			}
+		})
 	}
 }

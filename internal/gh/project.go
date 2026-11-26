@@ -216,20 +216,34 @@ func (c *Client) AddItem(issue *Issue) (int64, error) {
 	return out.ID, err
 }
 
-// SetFields sets single-select fields on an item in one request.
-// Values maps field names to option names.
-func (c *Client) SetFields(itemID int64, values map[string]string) error {
+// ValidateFields checks field and option names against the project's definitions.
+func (c *Client) ValidateFields(values map[string]string) error {
+	_, err := c.resolveFields(values)
+	return err
+}
+
+func (c *Client) resolveFields(values map[string]string) ([]map[string]any, error) {
 	var updates []map[string]any
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		f, err := c.Field(name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		idx := slices.IndexFunc(f.Options, func(o Option) bool { return o.Name.Raw == values[name] })
 		if idx < 0 {
-			return localf("project field %s has no option %q; options: %s", name, values[name], strings.Join(f.OptionNames(), ", "))
+			return nil, localf("project field %s has no option %q; options: %s", name, values[name], strings.Join(f.OptionNames(), ", "))
 		}
 		updates = append(updates, map[string]any{"id": f.ID, "value": f.Options[idx].ID})
+	}
+	return updates, nil
+}
+
+// SetFields sets single-select fields on an item in one request.
+// Values maps field names to option names.
+func (c *Client) SetFields(itemID int64, values map[string]string) error {
+	updates, err := c.resolveFields(values)
+	if err != nil {
+		return err
 	}
 	p, err := c.project()
 	if err != nil {

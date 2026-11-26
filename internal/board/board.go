@@ -44,8 +44,21 @@ type App struct {
 	Version string
 }
 
-// Open loads the config from the checkout that holds dir.
+// Open loads the board with a GitHub client.
 func Open(dir, version string) (*App, error) {
+	a, err := OpenLocal(dir, version)
+	if err != nil {
+		return nil, err
+	}
+	a.GH, err = gh.New(a.Cfg)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// OpenLocal loads the config from the checkout that holds dir without a GitHub client.
+func OpenLocal(dir, version string) (*App, error) {
 	g := git.Git{Dir: dir}
 	root, err := g.Run("rev-parse", "--show-toplevel")
 	if err != nil {
@@ -58,11 +71,7 @@ func Open(dir, version string) (*App, error) {
 	if err := cfg.CheckVersion(version); err != nil {
 		return nil, err
 	}
-	client, err := gh.New(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &App{Cfg: cfg, GH: client, Git: git.Git{Dir: root}, Out: os.Stdout, Err: os.Stderr, Version: version}, nil
+	return &App{Cfg: cfg, Git: git.Git{Dir: root}, Out: os.Stdout, Err: os.Stderr, Version: version}, nil
 }
 
 func (a *App) printf(format string, args ...any) { _, _ = fmt.Fprintf(a.Out, format, args...) }
@@ -112,8 +121,21 @@ func (a *App) item(number int) (*gh.Issue, *gh.Item, error) {
 		return nil, nil, err
 	}
 	item, err := a.GH.FindItem(issue)
-	if err != nil {
+	if err == nil {
+		return issue, item, nil
+	}
+	if !errors.Is(err, gh.ErrNotOnProject) {
 		return nil, nil, err
 	}
-	return issue, item, nil
+	// Project search can miss archived or not-yet-indexed cards.
+	items, scanErr := a.GH.Items()
+	if scanErr != nil {
+		return nil, nil, scanErr
+	}
+	for i := range items {
+		if items[i].Issue.Number == number {
+			return issue, &items[i], nil
+		}
+	}
+	return nil, nil, err
 }

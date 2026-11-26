@@ -32,7 +32,7 @@ func (a *App) Ready(number int) error {
 				problems = append(problems, fmt.Sprintf("%s must be %s on the project", name, orList(allowed)))
 			}
 		}
-	} else if len(a.Cfg.Forms) == 0 {
+	} else {
 		for _, name := range a.Cfg.FieldNames() {
 			if a.Cfg.Fields[name].Required && item.Values[name] == "" {
 				problems = append(problems, name+" is not set on the project")

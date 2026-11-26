@@ -46,7 +46,7 @@ func (a *App) File(o FileOpts) error {
 	if err != nil {
 		return err
 	}
-	if _, err := a.GH.Fields(); err != nil {
+	if err := a.GH.ValidateFields(values); err != nil {
 		return err
 	}
 

@@ -24,15 +24,31 @@ func (a *App) Check() error {
 	for i := range items {
 		byNumber[items[i].Issue.Number] = &items[i]
 	}
+	numbers := map[string]int{}
 	locked := map[int]bool{}
-	problems := 0
-	for _, ref := range slices.Sorted(maps.Keys(locks)) {
-		n, err := strconv.Atoi(strings.TrimPrefix(ref, "refs/claims/"))
-		if err != nil {
-			continue
+	var shas []string
+	for ref, sha := range locks {
+		if n, err := strconv.Atoi(strings.TrimPrefix(ref, "refs/claims/")); err == nil {
+			numbers[ref] = n
+			locked[n] = true
+			shas = append(shas, sha)
 		}
-		locked[n] = true
-		l, err := a.describeLock(ref, locks[ref])
+	}
+	commits, err := a.GH.Commits(shas)
+	if err != nil {
+		return err
+	}
+	problems := 0
+	for _, ref := range slices.Sorted(maps.Keys(numbers)) {
+		n, sha := numbers[ref], locks[ref]
+		result := commits[sha]
+		var l *lock
+		err := result.Err
+		if err == nil {
+			l, err = parseLock(ref, sha, result.Commit)
+		} else {
+			err = fmt.Errorf("read lock at %s: %w", sha, err)
+		}
 		if err != nil {
 			a.printf("#%d\t%s: %v\n", n, ref, err)
 			problems++
@@ -43,9 +59,13 @@ func (a *App) Check() error {
 			return err
 		}
 		state, status := "", ""
-		if it := byNumber[n]; it != nil {
+		it := byNumber[n]
+		var stateErr error
+		if it != nil {
 			state, status = it.Issue.State, it.Values["Status"]
-		} else if issue, err := a.GH.Issue(n); err == nil {
+		} else if issue, err := a.GH.Issue(n); err != nil {
+			stateErr = err
+		} else {
 			state = issue.State
 		}
 		var note string
@@ -59,10 +79,17 @@ func (a *App) Check() error {
 			note = fmt.Sprintf("PR #%d %s; the next claim takes the lock over", pr.Number, map[bool]string{true: "merged", false: "closed"}[pr.MergedAt != nil])
 		default:
 			note = fmt.Sprintf("PR #%d open", pr.Number)
-			if status == a.Cfg.Statuses.Ready {
+			if it == nil && state == "open" {
+				note += "; not on the board"
+				problems++
+			} else if it != nil && status == a.Cfg.Statuses.Ready {
 				note += fmt.Sprintf("; Status is still %s", status)
 				problems++
 			}
+		}
+		if stateErr != nil {
+			note += fmt.Sprintf("; issue state could not be verified: %v", stateErr)
+			problems++
 		}
 		a.printf("#%d\t%s\t%s\n", n, l, note)
 	}

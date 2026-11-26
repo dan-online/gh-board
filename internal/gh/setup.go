@@ -24,7 +24,7 @@ type RepoInfo struct {
 }
 
 func (c *Client) RepoInfo() (*RepoInfo, error) {
-	var out struct {
+	type response struct {
 		Repository struct {
 			ID    string `json:"id"`
 			Owner struct {
@@ -33,6 +33,10 @@ func (c *Client) RepoInfo() (*RepoInfo, error) {
 				Login    string `json:"login"`
 			} `json:"owner"`
 			ProjectsV2 struct {
+				PageInfo struct {
+					HasNextPage bool   `json:"hasNextPage"`
+					EndCursor   string `json:"endCursor"`
+				} `json:"pageInfo"`
 				Nodes []struct {
 					Number int    `json:"number"`
 					Title  string `json:"title"`
@@ -50,28 +54,42 @@ func (c *Client) RepoInfo() (*RepoInfo, error) {
 			} `json:"issueTypes"`
 		} `json:"repository"`
 	}
-	q := `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
+	const q = `query($owner: String!, $name: String!, $after: String) { repository(owner: $owner, name: $name) {
 		id
 		owner { __typename id login }
-		projectsV2(first: 50) { nodes { number title closed owner { ... on Organization { login } ... on User { login } } } }
+		projectsV2(first: 50, after: $after) {
+			pageInfo { hasNextPage endCursor }
+			nodes { number title closed owner { ... on Organization { login } ... on User { login } } }
+		}
 		issueTypes(first: 50) { nodes { name isEnabled } }
 	} }`
-	if err := c.gql.Do(q, map[string]any{"owner": c.cfg.Owner(), "name": c.cfg.Name()}, &out); err != nil {
-		return nil, fmt.Errorf("read %s: %w", c.cfg.Repo, err)
-	}
-	r := out.Repository
-	info := &RepoInfo{ID: r.ID, OwnerID: r.Owner.ID, OwnerLogin: r.Owner.Login, OwnerIsOrg: r.Owner.Typename == "Organization"}
-	for _, p := range r.ProjectsV2.Nodes {
-		if !p.Closed {
-			info.Projects = append(info.Projects, ProjectRef{Owner: p.Owner.Login, Number: p.Number, Title: p.Title})
+	var after *string
+	info := &RepoInfo{}
+	for {
+		var out response
+		if err := c.gql.Do(q, map[string]any{"owner": c.cfg.Owner(), "name": c.cfg.Name(), "after": after}, &out); err != nil {
+			return nil, fmt.Errorf("read %s: %w", c.cfg.Repo, err)
 		}
-	}
-	for _, t := range r.IssueTypes.Nodes {
-		if t.IsEnabled {
-			info.IssueTypes = append(info.IssueTypes, t.Name)
+		r := out.Repository
+		if after == nil {
+			info.ID, info.OwnerID, info.OwnerLogin = r.ID, r.Owner.ID, r.Owner.Login
+			info.OwnerIsOrg = r.Owner.Typename == "Organization"
+			for _, t := range r.IssueTypes.Nodes {
+				if t.IsEnabled {
+					info.IssueTypes = append(info.IssueTypes, t.Name)
+				}
+			}
 		}
+		for _, p := range r.ProjectsV2.Nodes {
+			if !p.Closed {
+				info.Projects = append(info.Projects, ProjectRef{Owner: p.Owner.Login, Number: p.Number, Title: p.Title})
+			}
+		}
+		if !r.ProjectsV2.PageInfo.HasNextPage {
+			return info, nil
+		}
+		after = &r.ProjectsV2.PageInfo.EndCursor
 	}
-	return info, nil
 }
 
 // CreateProject creates a project owned by ownerID and linked to repoID.

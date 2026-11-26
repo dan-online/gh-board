@@ -29,7 +29,7 @@ func (f *fakeMerge) MergeAsync(int, string, string) (*gh.AsyncMerge, error) {
 func (f *fakeMerge) MergeAsyncResult(int, string) (*gh.AsyncMerge, error) {
 	return nil, errors.New("unused")
 }
-func (f *fakeMerge) OpenPRsOnBase(string) ([]gh.PR, error) { return []gh.PR{{Number: 99}}, nil }
+func (f *fakeMerge) HasOpenPRsOnBase(string) (bool, error) { return true, nil }
 
 func TestMergeRefusesAPRAboveAnOpenOne(t *testing.T) {
 	f := &fakeMerge{stack: &gh.Stack{Number: 3, PullRequests: []gh.PR{{Number: 10, State: "closed"}, {Number: 11, State: "open"}, {Number: 12, State: "open"}}}}

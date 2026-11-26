@@ -229,9 +229,9 @@ func (c *claim) fail(cause error) error {
 		}
 	}
 	if c.local {
-		if _, err := a.Git.Run("worktree", "remove", "--force", c.worktree); err != nil {
+		if _, err := a.Git.Run("worktree", "remove", c.worktree); err != nil {
 			left = append(left, "remove worktree "+c.worktree)
-		} else if _, err := a.Git.Run("branch", "-D", c.branch); err != nil {
+		} else if _, err := a.Git.Run("update-ref", "-d", "refs/heads/"+c.branch, c.lock.SHA); err != nil {
 			left = append(left, "delete local branch "+c.branch)
 		}
 	}
@@ -286,41 +286,54 @@ func (a *App) stackParent(n, m int) (*parent, error) {
 	return a.stackParentOf(n, m, blockers)
 }
 
+type notStackable string
+
+func (e notStackable) Error() string { return string(e) }
+
+func (a *App) isRepoIssue(issue gh.Issue) bool {
+	return strings.HasPrefix(strings.ToLower(issue.HTMLURL), strings.ToLower("https://github.com/"+a.Cfg.Repo+"/issues/"))
+}
+
 // stackParentOf is stackParent for blockers already read.
 func (a *App) stackParentOf(n, m int, blockers []gh.Issue) (*parent, error) {
 	isBlocker := false
 	for _, b := range blockers {
-		switch {
-		case b.Number == m && b.State == "open":
-			isBlocker = true
-		case b.Number != m && b.State == "open":
-			return nil, fmt.Errorf("--on #%d: #%d is also blocked by open #%d", m, n, b.Number)
+		if b.State != "open" {
+			continue
 		}
+		if b.Number != m || !a.isRepoIssue(b) {
+			return nil, notStackable(fmt.Sprintf("--on #%d: #%d is also blocked by open #%d", m, n, b.Number))
+		}
+		isBlocker = true
 	}
 	if !isBlocker {
-		return nil, fmt.Errorf("--on #%d: #%d is not an open blocker of #%d", m, m, n)
+		return nil, notStackable(fmt.Sprintf("--on #%d: #%d is not an open blocker of #%d", m, m, n))
 	}
+	return a.readStackParent(m)
+}
+
+func (a *App) readStackParent(m int) (*parent, error) {
 	l, err := a.readLock(m)
 	if err != nil {
 		return nil, err
 	}
 	if l == nil {
-		return nil, fmt.Errorf("--on #%d: #%d has no claim to stack on", m, m)
+		return nil, notStackable(fmt.Sprintf("--on #%d: #%d has no claim to stack on", m, m))
 	}
 	pr, err := a.lockPR(l)
 	if err != nil {
 		return nil, err
 	}
 	if pr == nil || pr.State != "open" {
-		return nil, fmt.Errorf("--on #%d: #%d's claim has no open PR%s", m, m, describePR(pr))
+		return nil, notStackable(fmt.Sprintf("--on #%d: #%d's claim has no open PR%s", m, m, describePR(pr)))
 	}
 	st, err := a.GH.StackFor(pr.Number)
 	if err != nil {
 		return nil, err
 	}
 	if st != nil && st.Top() != pr.Number {
-		return nil, fmt.Errorf("--on #%d: PR #%d is not the top of stack %d, and stacks are linear; wait for #%d or split the work",
-			m, pr.Number, st.Number, m)
+		return nil, notStackable(fmt.Sprintf("--on #%d: PR #%d is not the top of stack %d, and stacks are linear; wait for #%d or split the work",
+			m, pr.Number, st.Number, m))
 	}
 	return &parent{issue: m, pr: pr, stack: st}, nil
 }
